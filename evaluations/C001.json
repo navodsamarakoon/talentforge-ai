@@ -1,0 +1,40 @@
+{
+    "candidate_id": "C001",
+    "candidate_name": "Alice",
+    "role": "Software Engineer",
+    "task": "Two Sum",
+    "evaluation": {
+        "criteria": {
+            "code_quality": {
+                "evidence": "The code is clean, well-structured, and uses proper Python syntax with clear variable names (seen, complement, i, num). It follows a straightforward and readable pattern with no unnecessary complexity or redundant logic.",
+                "score": 10
+            },
+            "correctness": {
+                "evidence": "The test results show a perfect pass rate of 10 out of 10, indicating that the solution correctly handles all test cases for the Two Sum problem.",
+                "score": 10
+            },
+            "efficiency": {
+                "evidence": "The solution uses a hash map to achieve O(n) time complexity and O(n) space complexity, which is optimal for the Two Sum problem. The candidate correctly identifies the efficiency of the approach.",
+                "score": 10
+            },
+            "explanation": {
+                "evidence": "The explanation clearly describes the use of a hash map, the calculation of the complement, and correctly identifies the time and space complexity. It is concise, accurate, and well-structured.",
+                "score": 10
+            },
+            "problem_solving": {
+                "evidence": "The candidate uses an efficient algorithm based on a hash map to solve the Two Sum problem, demonstrating a sound understanding of the problem and a correct algorithmic approach. The solution avoids brute force by leveraging a hash map for constant-time lookups.",
+                "score": 10
+            }
+        },
+        "final_verdict": "The candidate demonstrates excellent understanding and execution of the Two Sum problem. The solution is correct, efficient, and well-explained. All aspects of the evaluation reflect high technical proficiency.",
+        "overall_score": 10,
+        "strengths": [
+            "Demonstrates optimal time and space complexity.",
+            "Clear and accurate code structure.",
+            "Precise and complete explanation of the algorithm.",
+            "Perfect test results confirm correctness.",
+            "Strong problem-solving approach with proper use of data structures."
+        ],
+        "weaknesses": []
+    }
+}

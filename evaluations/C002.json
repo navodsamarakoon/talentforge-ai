@@ -1,0 +1,42 @@
+{
+    "candidate_id": "C002",
+    "candidate_name": "Bob",
+    "role": "Software Engineer",
+    "task": "Two Sum",
+    "evaluation": {
+        "criteria": {
+            "code_quality": {
+                "evidence": "The code is clean, well-structured, and easy to follow. It uses clear variable names and a straightforward logic flow. There are no syntax errors or unnecessary code blocks. The function is properly documented with a clear purpose and returns the expected output format.",
+                "score": 10
+            },
+            "correctness": {
+                "evidence": "The test results show 10 out of 10 tests passed, indicating the solution correctly handles all provided test cases. The function returns the correct indices when two numbers sum to the target and returns an empty list when no such pair exists.",
+                "score": 10
+            },
+            "efficiency": {
+                "evidence": "The solution uses nested loops resulting in O(n^2) time complexity, which is inefficient for large input sizes. A more optimal solution using a hash map would achieve O(n) time complexity. While the solution is correct, it is not optimal in terms of performance.",
+                "score": 5
+            },
+            "explanation": {
+                "evidence": "The candidate clearly explains the approach: comparing every pair of numbers and returning indices when their sum matches the target. The explanation accurately describes the algorithm and its time complexity. However, it does not mention alternative approaches or the limitations of the nested loop solution.",
+                "score": 8
+            },
+            "problem_solving": {
+                "evidence": "The candidate approaches the problem by systematically checking all pairs, which demonstrates an understanding of the constraints. While this approach is correct and straightforward, it lacks insight into optimization strategies or hash map usage, which could have been a more efficient solution. There is no indication of exploring alternative approaches or considering edge cases beyond the test suite.",
+                "score": 6
+            }
+        },
+        "final_verdict": "The candidate has a correct and readable solution that passes all tests. The implementation demonstrates basic problem-solving skills and clear coding practices. However, the solution is not efficient for large inputs, and the candidate does not explore optimized alternatives or discuss time complexity trade-offs. The explanation is clear but could be deeper in terms of algorithmic optimization.",
+        "overall_score": 7,
+        "strengths": [
+            "The solution is correct and fully passes all test cases.",
+            "The code is clean, readable, and well-structured.",
+            "The explanation accurately describes the algorithm and its time complexity."
+        ],
+        "weaknesses": [
+            "The time complexity is O(n^2), which is inefficient for large inputs.",
+            "No discussion of a more efficient O(n) solution using a hash map.",
+            "Missing insight into algorithmic optimization or edge cases beyond test coverage."
+        ]
+    }
+}
