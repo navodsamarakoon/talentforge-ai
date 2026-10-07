@@ -1,8 +1,27 @@
 import json
 
-from candidate import Candidate
-from evaluator import AIEvaluator
-from storage import save_evaluation, load_evaluation
+from app.candidate import Candidate
+from app.evaluator import AIEvaluator
+from app.storage import save_evaluation, load_evaluation
+from app.document_loader import load_all_documents
+
+documents = load_all_documents()
+
+print("\n")
+print("=" * 60)
+print("TALENTFORGE KNOWLEDGE BASE")
+print("=" * 60)
+
+print(f"Documents loaded: {len(documents)}")
+
+for document in documents:
+
+    print("\nSource:", document["source"])
+
+    print(
+        "Characters:",
+        len(document["content"])
+    )
 
 
 def main():

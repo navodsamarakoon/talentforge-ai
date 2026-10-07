@@ -1,37 +1,39 @@
-import os
 import json
 
-from dotenv import load_dotenv
-from huggingface_hub import InferenceClient
+from ollama import chat
 
 from candidate import Candidate
-
-
-# Load environment variables from .env
-load_dotenv()
 
 
 class AIEvaluator:
 
     def __init__(self):
+        self.model = "gemma3:4b"
 
-        # Get Hugging Face API token
-        token = os.getenv("HF_TOKEN")
+    def evaluate(self, candidate: Candidate, retrieved_context=None):
 
-        if not token:
-            raise ValueError(
-                "HF_TOKEN is not set in the .env file."
-            )
-
-        # Create Hugging Face client
-        self.client = InferenceClient(
-            api_key=token
-        )
-
-    def evaluate(self, candidate: Candidate):
+        if retrieved_context is None:
+            retrieved_context = []
 
         # ==========================================
-        # TALENTFORGE AI EVALUATION PROMPT
+        # Build Retrieved Knowledge Context
+        # ==========================================
+
+        knowledge_context = "\n\n".join(
+            [
+                f"Source: {item['source']}\n"
+                f"{item['content']}"
+                for item in retrieved_context
+            ]
+        )
+
+        if not knowledge_context:
+            knowledge_context = (
+                "No external TalentForge knowledge was retrieved."
+            )
+
+        # ==========================================
+        # Evaluation Prompt
         # ==========================================
 
         prompt = f"""
@@ -61,28 +63,97 @@ Candidate Explanation:
 
 
 ========================
+RETRIEVED TALENTFORGE KNOWLEDGE
+========================
+
+The following information was retrieved from the TalentForge
+technical knowledge base.
+
+Use this knowledge as evaluation guidance.
+
+IMPORTANT:
+
+- Retrieved knowledge is evaluation guidance.
+- Retrieved knowledge is NOT candidate evidence.
+- Do not give the candidate credit merely because the knowledge
+  describes a good practice or algorithm.
+- Determine whether the candidate actually demonstrated
+  the relevant knowledge in their submission.
+
+{knowledge_context}
+
+
+========================
 EVALUATION CRITERIA
 ========================
 
 Evaluate the candidate using these five criteria:
 
 1. Correctness
-   Determine whether the submitted solution correctly solves the task.
+
+Determine whether the submitted solution correctly solves the task.
+
+Consider:
+- Test results
+- Expected behavior
+- Logical correctness
+- Handling of valid inputs
+- Important edge cases
+
 
 2. Problem Solving
-   Evaluate the candidate's algorithmic thinking and approach.
+
+Evaluate the candidate's ability to understand the problem
+and develop an appropriate algorithmic solution.
+
+Consider:
+- Understanding of the problem
+- Algorithm selection
+- Data structure selection
+- Logical reasoning
+- Ability to identify constraints
+- Ability to improve inefficient approaches
+
 
 3. Code Quality
-   Evaluate readability, structure, maintainability,
-   and coding practices.
+
+Evaluate how clearly and maintainably the candidate
+implemented the solution.
+
+Consider:
+- Readability
+- Code structure
+- Meaningful variable names
+- Maintainability
+- Appropriate programming constructs
+- Avoidance of unnecessary complexity
+- Consistent coding practices
+
 
 4. Efficiency
-   Evaluate time complexity, space complexity,
-   and whether the solution uses an appropriate algorithm.
+
+Evaluate the computational performance of the solution.
+
+Consider:
+- Time complexity
+- Space complexity
+- Algorithm selection
+- Data structure selection
+- Scalability
+
 
 5. Explanation
-   Evaluate how clearly the candidate explains
-   the solution and reasoning.
+
+Evaluate how clearly the candidate communicates
+their technical reasoning.
+
+Consider:
+- Understanding of the solution
+- Algorithm explanation
+- Important implementation decisions
+- Time complexity explanation
+- Space complexity explanation
+- Awareness of limitations and edge cases
 
 
 ========================
@@ -93,7 +164,7 @@ For each criterion:
 
 - Give a score from 0 to 10.
 - Provide evidence supporting the score.
-- Base the score only on the provided candidate evidence.
+- Base the score only on demonstrated candidate evidence.
 
 Score meaning:
 
@@ -108,37 +179,41 @@ Score meaning:
 EVALUATION RULES
 ========================
 
-1. Evaluate only the evidence provided.
+1. Evaluate only the evidence provided by the candidate.
 2. Do not invent candidate information.
 3. Do not assume skills that are not demonstrated.
 4. Consider test results when evaluating correctness.
 5. Consider time and space complexity when evaluating efficiency.
-6. Identify important weaknesses or limitations.
-7. Keep the evaluation technically accurate and objective.
+6. Use the retrieved TalentForge knowledge as technical evaluation guidance.
+7. Do not treat retrieved knowledge as candidate evidence.
+8. Identify important weaknesses or limitations.
+9. Keep the evaluation technically accurate and objective.
+10. A candidate should receive credit only when their submission
+    demonstrates the relevant competency.
+11. Do not assign scores based on claims that are not supported
+    by the candidate's code, test results, or explanation.
 
 
 ========================
 OUTPUT
 ========================
 
-Return the evaluation using exactly the required JSON schema.
+Return the evaluation using exactly the required JSON structure.
 
 Do not include Markdown.
 Do not include explanations outside the JSON object.
 """
 
         # ==========================================
-        # JSON SCHEMA
+        # JSON Schema
         # ==========================================
 
         evaluation_schema = {
             "type": "object",
-
             "properties": {
 
                 "criteria": {
                     "type": "object",
-
                     "properties": {
 
                         "correctness": {
@@ -285,28 +360,11 @@ Do not include explanations outside the JSON object.
         }
 
         # ==========================================
-        # STRUCTURED RESPONSE FORMAT
+        # Call Local Ollama LLM
         # ==========================================
 
-        response_format = {
-            "type": "json_schema",
-
-            "json_schema": {
-                "name": "TalentForgeEvaluation",
-
-                "schema": evaluation_schema,
-
-                "strict": True
-            }
-        }
-
-        # ==========================================
-        # CALL LLM
-        # ==========================================
-
-        response = self.client.chat.completions.create(
-
-            model="Qwen/Qwen3-4B-Instruct-2507",
+        response = chat(
+            model=self.model,
 
             messages=[
                 {
@@ -315,29 +373,30 @@ Do not include explanations outside the JSON object.
                 }
             ],
 
-            response_format=response_format,
+            format=evaluation_schema,
 
-            max_tokens=1500
+            options={
+                "temperature": 0
+            }
         )
 
         # ==========================================
-        # GET RESPONSE
+        # Extract LLM Response
         # ==========================================
 
-        content = response.choices[0].message.content
+        content = response.message.content
 
         # ==========================================
-        # PARSE JSON
+        # Parse JSON
         # ==========================================
 
         try:
-
             evaluation = json.loads(content)
 
         except json.JSONDecodeError as error:
 
             raise ValueError(
-                f"LLM returned invalid JSON:\n{content}"
+                f"Ollama returned invalid JSON:\n{content}"
             ) from error
 
         return evaluation
