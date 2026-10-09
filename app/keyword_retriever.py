@@ -1,4 +1,4 @@
-from document_loader import load_all_documents
+from app.document_loader import load_all_documents
 
 
 class KeywordRetriever:

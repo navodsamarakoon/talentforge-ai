@@ -1,5 +1,5 @@
-from embeddings import EmbeddingGenerator
-from vector_store import VectorStore
+from app.embeddings import EmbeddingGenerator
+from app.vector_store import VectorStore
 
 
 class Retriever:

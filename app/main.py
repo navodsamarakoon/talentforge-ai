@@ -4,6 +4,8 @@ from app.candidate import Candidate
 from app.evaluator import AIEvaluator
 from app.storage import save_evaluation, load_evaluation
 from app.document_loader import load_all_documents
+from app.graph_retriever import GraphRetriever
+from app.hybrid_retriever import HybridRetriever
 
 documents = load_all_documents()
 
@@ -140,7 +142,8 @@ def two_sum(nums, target):
     # ==========================================
 
     evaluator = AIEvaluator()
-
+    graph_retriever = GraphRetriever()
+    hybrid_retriever = HybridRetriever()
 
     # ==========================================
     # TEST ALL CANDIDATES
@@ -161,7 +164,26 @@ def two_sum(nums, target):
         print(f"Name: {candidate.name}")
         print("=" * 60)
 
-        evaluation = evaluator.evaluate(candidate)
+        retrieved_context = hybrid_retriever.retrieve(
+            query=(
+                f"Evaluate a {candidate.role} candidate "
+                f"for the {candidate.task} task. "
+                f"Assess correctness, problem solving, code quality, "
+                f"efficiency, and explanation."
+            ),
+            top_k=3,
+        )
+
+        graph_context = graph_retriever.retrieve_for_candidate(
+            role_name=candidate.role,
+            task_name=candidate.task,
+        )
+
+        evaluation = evaluator.evaluate(
+            candidate,
+            retrieved_context=retrieved_context,
+            graph_context=graph_context
+        )
 
         print("\nAI Evaluation:\n")
 
@@ -171,6 +193,9 @@ def two_sum(nums, target):
                 indent=4
             )
         )
+
+        print("\nGraphRAG Context:")
+        print(json.dumps(graph_context, indent=4))
 
 
         # ==========================================

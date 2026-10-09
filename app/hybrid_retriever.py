@@ -1,5 +1,5 @@
-from retriever import Retriever
-from keyword_retriever import KeywordRetriever
+from app.retriever import Retriever
+from app.keyword_retriever import KeywordRetriever
 
 
 class HybridRetriever:
