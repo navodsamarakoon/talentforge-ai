@@ -1,9 +1,24 @@
 import json
+import math
 
+from dotenv import load_dotenv
 from ollama import chat
 from sympy import content
 
+load_dotenv()
+
+from langsmith import traceable
 from app.candidate import Candidate
+
+
+@traceable(name="TalentForge Ollama LLM Call", run_type="llm")
+def traced_ollama_chat(model, messages, format, options):
+    return chat(
+        model=model,
+        messages=messages,
+        format=format,
+        options=options
+    )
 
 
 class AIEvaluator:
@@ -11,12 +26,20 @@ class AIEvaluator:
     def __init__(self):
         self.model = "gemma3:4b"
 
+    
+    
+    @traceable(
+        name="TalentForge AI Evaluator",
+        metadata={"component": "candidate_evaluation"},
+        tags=["TalentForge", "Candidate Evaluation"]
+    )
+
     def evaluate(
     self,
     candidate: Candidate,
     retrieved_context=None,
     graph_context=None
-):
+    ):
         
         if retrieved_context is None:
             retrieved_context = []
@@ -416,23 +439,14 @@ Do not include explanations outside the JSON object.
         # Call Local Ollama LLM
         # ==========================================
 
-        response = chat(
+        response = traced_ollama_chat(
             model=self.model,
-
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-
+            messages=[{"role": "user", "content": prompt}],
             format=evaluation_schema,
-
-            options={
-                "temperature": 0
-            }
+            options={"temperature": 0}
         )
 
+        
         # ==========================================
         # Extract LLM Response
         # ==========================================
@@ -450,8 +464,37 @@ Do not include explanations outside the JSON object.
                 f"Ollama returned invalid JSON:\n{content}"
             ) from error
 
-        # Calculate the final verdict using the overall score
-        overall_score = float(evaluation["overall_score"])
+        # ==========================================
+        # Validate Evaluation Response
+        # ==========================================
+
+        if not isinstance(evaluation, dict):
+            raise ValueError(
+                "Ollama response must be a JSON object."
+            )
+
+        if "overall_score" not in evaluation:
+            raise ValueError(
+                "Ollama response is missing 'overall_score'."
+            )
+
+        score = evaluation["overall_score"]
+
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise ValueError(
+                "overall_score must be a number."
+            )
+
+        if not math.isfinite(score) or not 0 <= score <= 10:
+            raise ValueError(
+                "overall_score must be between 0 and 10."
+            )
+
+        # ==========================================
+        # Calculate Final Verdict
+        # ==========================================
+
+        overall_score = float(score)
 
         if overall_score >= 9.0:
             evaluation["final_verdict"] = "Excellent"
@@ -463,3 +506,4 @@ Do not include explanations outside the JSON object.
             evaluation["final_verdict"] = "Poor"
 
         return evaluation
+

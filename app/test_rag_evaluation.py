@@ -1,6 +1,7 @@
-from candidate import Candidate
-from evaluator import AIEvaluator
-from retriever import Retriever
+from app.candidate import Candidate
+from app.evaluator import AIEvaluator
+from app.retriever import Retriever
+from langsmith import tracing_context
 
 
 def main():
@@ -102,10 +103,15 @@ and explanation.
 
     print("\nRunning RAG-based evaluation...")
 
-    evaluation = evaluator.evaluate(
-        candidate,
-        retrieved_context
-    )
+    with tracing_context(
+        metadata={
+            "component": "candidate_evaluation",
+            "candidate_id": candidate.candidate_id,
+            "candidate_name": candidate.name,
+            "role": candidate.role,
+        }
+    ):
+        evaluation = evaluator.evaluate(candidate, retrieved_context)
 
     # --------------------------------
     # Display result
