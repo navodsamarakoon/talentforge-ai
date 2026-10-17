@@ -1,0 +1,102 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: backend
+      args:
+        INSTALL_RETRIEVAL_DEPS: ${INSTALL_RETRIEVAL_DEPS:-false}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-60}
+      INVITATION_EXPIRY_HOURS: ${INVITATION_EXPIRY_HOURS:-72}
+      SANDBOX_RUNNER_URL: http://sandbox-runner:8001
+      SANDBOX_TIMEOUT_SECONDS: ${SANDBOX_TIMEOUT_SECONDS:-5}
+      SANDBOX_MAX_CODE_CHARS: ${SANDBOX_MAX_CODE_CHARS:-20000}
+      AI_ENABLED: ${AI_ENABLED:-true}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-270}
+      RETRIEVAL_ENABLED: ${RETRIEVAL_ENABLED:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8080}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-240}
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-}
+      NEO4J_URI: ${NEO4J_URI:-}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./chroma_db:/workspace/chroma_db
+    ports:
+      - "8000:8000"
+    networks:
+      - default
+      - sandbox-internal
+
+  sandbox-runner:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: sandbox-runner
+    restart: unless-stopped
+    environment:
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-python:3.12-alpine}
+      SANDBOX_TIMEOUT_SECONDS: ${SANDBOX_TIMEOUT_SECONDS:-5}
+      SANDBOX_MAX_CODE_CHARS: ${SANDBOX_MAX_CODE_CHARS:-20000}
+    group_add:
+      - "${DOCKER_GID:?Set DOCKER_GID to the mounted Docker socket's group ID}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - sandbox-internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: /api
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+networks:
+  sandbox-internal:
+    internal: true
+
+volumes:
+  postgres-data:

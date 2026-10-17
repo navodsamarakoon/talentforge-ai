@@ -1,0 +1,4 @@
+-r requirements-ai.txt
+chromadb>=1.5,<2
+sentence-transformers>=3,<6
+langchain-neo4j>=0.5,<1
