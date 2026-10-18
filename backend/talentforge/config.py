@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     sandbox_timeout_seconds: int = Field(default=5, ge=1, le=30)
     sandbox_max_code_chars: int = Field(default=20_000, ge=100, le=100_000)
     ai_enabled: bool = False
-    ai_timeout_seconds: int = Field(default=270, ge=5, le=300)
+    ai_timeout_seconds: int = Field(default=270, ge=5, le=600)
     retrieval_enabled: bool = False
     cors_origins: str = "http://localhost:5173"
 
