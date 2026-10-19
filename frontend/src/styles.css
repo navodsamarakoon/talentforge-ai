@@ -85,6 +85,8 @@ input::placeholder, textarea::placeholder { color: #a3acbb; }
 .stat-card span { color: #718098; font-size: 11px; }.stat-card b { color: var(--navy); font: 800 19px Manrope, sans-serif; }.stat-card small { color: #99a2b1; font-size: 10px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .section-title h2 { margin: 5px 0 0; color: var(--navy); font: 800 18px Manrope, sans-serif; letter-spacing: -.4px; }
+.assessment-view-switch { display: flex; flex-wrap: wrap; gap: 8px; }
+.assessment-view-switch .button { min-height: 36px; }
 .count { min-width: 24px; display: inline-grid; place-items: center; padding: 4px 7px; border-radius: 14px; background: #edf0f8; color: #66738c; font-size: 10px; font-weight: 700; }
 .list-header { margin-bottom: 14px; }
 .assessment-list { display: grid; gap: 9px; }
@@ -106,6 +108,7 @@ input::placeholder, textarea::placeholder { color: #a3acbb; }
 .status i { width: 5px; height: 5px; border-radius: 50%; background: #9aa4b4; }
 .status.published { border-color: #d7f0e3; background: #f0fbf5; color: #348460; }.status.published i { background: #4eb282; }
 .status.draft { border-color: #f1e9ce; background: #fffbef; color: #997938; }.status.draft i { background: #d3a745; }
+.status.archived { border-color: #e2e5ec; background: #f1f3f7; color: #66718a; }.status.archived i { background: #8993a6; }
 .list-arrow { color: #a1aabc; }
 .dot-sep { padding: 0 3px; color: #c0c7d2; }
 .empty-state { display: flex; flex-direction: column; align-items: center; padding: 52px 20px; border: 1px dashed #d9dfeb; border-radius: 12px; background: #fff; text-align: center; }
@@ -161,6 +164,7 @@ td .status { margin-bottom: 2px; }.score { color: #3d57d4; font: 800 14px Manrop
 .candidate-assessments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
 .candidate-card { padding: 20px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
 .candidate-card-top { display: flex; align-items: center; justify-content: space-between; }
+.candidate-card-status { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .candidate-tag { display: inline-flex; align-items: center; gap: 6px; color: #5369d3; font-size: 10px; font-weight: 700; }
 .candidate-card h2 { margin: 18px 0 5px; color: var(--navy); font: 800 17px Manrope, sans-serif; }
 .candidate-card > p { margin: 0; color: #8290a5; font-size: 11px; }
@@ -212,7 +216,7 @@ td .status { margin-bottom: 2px; }.score { color: #3d57d4; font: 800 14px Manrop
 @media (max-width: 600px) {
   .topbar { height: 60px; padding: 0 17px; }.top-nav { gap: 14px; }.top-nav > a { display: none; }.user-menu { padding-left: 10px; }.user-name { display: none; }
   .page { width: calc(100% - 30px); padding: 30px 0 50px; }.footer { padding: 14px 16px; }.footer span:last-child { text-align: right; }
-  .page-heading { align-items: flex-start; flex-direction: column; }.page-heading h1 { font-size: 25px; }.stats-grid { grid-template-columns: 1fr; gap: 8px; }.stat-card { min-height: 88px; }
+  .page-heading { align-items: flex-start; flex-direction: column; }.page-heading h1 { font-size: 25px; }.stats-grid { grid-template-columns: 1fr; gap: 8px; }.stat-card { min-height: 88px; }.section-title.list-header { align-items: flex-start; flex-direction: column; }
   .form-grid { grid-template-columns: 1fr; }.span-two { grid-column: auto; }.test-case-builder { grid-template-columns: 1fr; }.detail-heading { align-items: flex-start; flex-direction: column; }.invite-form { align-items: stretch; flex-direction: column; }.invite-link { align-items: flex-start; flex-direction: column; }
   .candidate-assessments { grid-template-columns: 1fr; }.candidate-heading { gap: 15px; }.candidate-meta { flex-wrap: wrap; }.auth-card { padding: 24px; }.auth-story { padding: 0; }.auth-story h1 { font-size: 34px; }
   .attempt-layout { grid-template-columns: minmax(0, 1fr); }.problem-pane { padding: 16px; }.code-pane { min-height: 600px; }.editor-wrap { min-height: 280px; }.editor-status { display: none; }

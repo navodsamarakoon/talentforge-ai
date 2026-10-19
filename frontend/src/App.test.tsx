@@ -57,6 +57,8 @@ function assessment(overrides: Partial<Assessment> = {}): Assessment {
     time_limit_minutes: 45,
     allow_multiple_attempts: false,
     is_published: false,
+    is_archived: false,
+    has_candidate_records: false,
     created_at: "2026-10-19T12:00:00Z",
     published_at: null,
     questions: [],
@@ -143,6 +145,53 @@ describe("recruiter assessment CRUD", () => {
     await user.type(screen.getByLabelText("Search assessments"), "fundamentals");
     expect(screen.getByText("Python fundamentals")).toBeInTheDocument();
     expect(screen.queryByText("Published algorithms")).not.toBeInTheDocument();
+  });
+
+  it("archives assessments with candidate history and restores them from the archived view", async () => {
+    const active = assessment({ has_candidate_records: true });
+    const archived = assessment({ has_candidate_records: true, is_archived: true });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/assessments?archived=true") && !options?.method) return jsonResponse([archived]);
+      if (url.endsWith("/assessments") && !options?.method) return jsonResponse([active]);
+      if (url.endsWith("/archive")) return jsonResponse(archived);
+      if (url.endsWith("/unarchive")) return jsonResponse(active);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    renderRecruiter();
+
+    expect(await screen.findByRole("button", { name: "Archive" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("invitations, attempts, submissions, and reports are preserved"));
+    expect(await screen.findByRole("status")).toHaveTextContent("Candidate history is preserved.");
+    expect(screen.queryByText("Python fundamentals")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Archived" }));
+    expect(await screen.findByText("Python fundamentals")).toBeInTheDocument();
+    expect(screen.getAllByText("Archived")).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/assessments?archived=true", expect.anything());
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("restored to the active workspace");
+    expect(screen.queryByText("Python fundamentals")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/assessments/assessment-1/unarchive", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("keeps an assessment visible and reports server errors when archiving fails", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, options?: RequestInit) =>
+      options?.method === "POST"
+        ? jsonResponse({ detail: "Assessment is already archived." }, 409)
+        : jsonResponse([assessment({ has_candidate_records: true })]));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    renderRecruiter();
+
+    await user.click(await screen.findByRole("button", { name: "Archive" }));
+    expect(await screen.findByText("Request failed (409): Assessment is already archived.")).toBeInTheDocument();
+    expect(screen.getByText("Python fundamentals")).toBeInTheDocument();
   });
 
   it("keeps assessment details navigable from the card without Edit or chevron actions", async () => {
@@ -373,5 +422,38 @@ describe("recruiter assessment CRUD", () => {
     await user.click(screen.getByRole("button", { name: "Delete" }));
     expect(await screen.findByRole("status")).toHaveTextContent('Assessment "Python fundamentals" was deleted.');
     expect(screen.queryByText("Python fundamentals")).not.toBeInTheDocument();
+  });
+});
+
+describe("candidate access to archived assessments", () => {
+  it("keeps an in-progress archived assessment resumable without offering a new start", async () => {
+    const candidate: User = {
+      id: "candidate-1",
+      email: "candidate@example.test",
+      full_name: "Candidate",
+      role: "candidate",
+      organization_id: null,
+    };
+    saveAuth("candidate-token", candidate);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/assessments")) {
+        return jsonResponse([assessment({ is_published: true, is_archived: true, allow_multiple_attempts: true })]);
+      }
+      if (url.endsWith("/candidate/attempts")) {
+        return jsonResponse([{
+          id: "attempt-in-progress",
+          assessment_id: "assessment-1",
+          deadline_at: new Date(Date.now() + 60_000).toISOString(),
+          completed_at: null,
+        }]);
+      }
+      return jsonResponse([]);
+    }));
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+
+    expect(await screen.findByText("Python fundamentals")).toBeInTheDocument();
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /continue assessment/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /start assessment/i })).not.toBeInTheDocument();
   });
 });

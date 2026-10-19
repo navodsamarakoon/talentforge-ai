@@ -1,8 +1,19 @@
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
+from sqlalchemy import select
+
 from talentforge.api import get_sandbox
-from talentforge.models import Assessment, Attempt, Invitation, Question, utcnow
+from talentforge.models import (
+    Assessment,
+    Attempt,
+    EvaluationReport,
+    Invitation,
+    Question,
+    Submission,
+    TestCase as HiddenCase,
+    utcnow,
+)
 from talentforge.sandbox import CaseResult
 from talentforge.schemas import EvaluationOutput
 
@@ -119,6 +130,139 @@ def test_recruiter_candidate_assessment_submission_and_reports(client):
         assert len(comparison.json()[0]["execution_results"]) == 2
     finally:
         client.app.dependency_overrides.pop(get_sandbox, None)
+
+
+def test_archiving_preserves_candidate_history_and_allows_started_attempt_to_finish(client, db_session):
+    recruiter = auth(client, "archive-owner@example.com", "Archive Org")
+    assessment_id = published_assessment(client, recruiter)
+    candidate = invite_candidate(client, recruiter, assessment_id, "archive-candidate@example.com")
+    started = client.post(f"/api/candidate/assessments/{assessment_id}/attempts", headers=candidate)
+    assert started.status_code == 201, started.text
+    attempt_id = started.json()["id"]
+    question_id = started.json()["assessment"]["questions"][0]["id"]
+
+    archived = client.post(f"/api/assessments/{assessment_id}/archive", headers=recruiter)
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["is_archived"] is True
+    assert client.post(f"/api/assessments/{assessment_id}/archive", headers=recruiter).status_code == 409
+    assert client.get("/api/assessments", headers=recruiter).json() == []
+    archived_rows = client.get("/api/assessments?archived=true", headers=recruiter).json()
+    assert len(archived_rows) == 1
+    assert archived_rows[0]["id"] == assessment_id
+    assert archived_rows[0]["has_candidate_records"] is True
+    archived_candidate_assessments = client.get("/api/candidate/assessments", headers=candidate).json()
+    assert len(archived_candidate_assessments) == 1
+    assert archived_candidate_assessments[0]["is_archived"] is True
+    assert client.post(
+        f"/api/assessments/{assessment_id}/invitations",
+        headers=recruiter,
+        json={"email": "new-candidate@example.com"},
+    ).status_code == 409
+    blocked_start = client.post(
+        f"/api/candidate/assessments/{assessment_id}/attempts",
+        headers=candidate,
+    )
+    assert blocked_start.status_code == 409
+    assert "archived" in blocked_start.json()["detail"].lower()
+
+    historical_attempt = client.get(f"/api/candidate/attempts/{attempt_id}", headers=candidate)
+    assert historical_attempt.status_code == 200
+    assert historical_attempt.json()["id"] == attempt_id
+    candidate_rows = client.get("/api/candidate/assessments", headers=candidate).json()
+    assert len(candidate_rows) == 1
+    assert candidate_rows[0]["is_archived"] is True
+    client.app.dependency_overrides[get_sandbox] = FakeSandbox
+    try:
+        submission = client.post(
+            f"/api/candidate/attempts/{attempt_id}/submissions",
+            headers=candidate,
+            json={"question_id": question_id, "code": "def add(a, b): return a + b"},
+        )
+        assert submission.status_code == 201, submission.text
+        assert submission.json()["evaluation_status"] == "skipped"
+    finally:
+        client.app.dependency_overrides.pop(get_sandbox, None)
+
+    reports = client.get(f"/api/assessments/{assessment_id}/reports", headers=recruiter)
+    assert reports.status_code == 200
+    assert reports.json()[0]["submission_id"] == submission.json()["id"]
+    db_session.expire_all()
+    assert db_session.get(Invitation, client.get(
+        f"/api/assessments/{assessment_id}/invitations", headers=recruiter
+    ).json()[0]["id"]) is not None
+    assert db_session.get(Attempt, attempt_id) is not None
+    assert db_session.get(Submission, submission.json()["id"]) is not None
+    assert db_session.scalar(select(EvaluationReport.id).where(
+        EvaluationReport.submission_id == submission.json()["id"]
+    )) is not None
+    assert db_session.scalar(select(HiddenCase.id).where(
+        HiddenCase.question_id == question_id,
+        HiddenCase.is_hidden.is_(True),
+    )) is not None
+    assert client.delete(f"/api/assessments/{assessment_id}", headers=recruiter).status_code == 409
+
+    restored = client.post(f"/api/assessments/{assessment_id}/unarchive", headers=recruiter)
+    assert restored.status_code == 200
+    assert restored.json()["is_archived"] is False
+    assert [row["id"] for row in client.get("/api/assessments", headers=recruiter).json()] == [assessment_id]
+    assert client.get("/api/assessments?archived=true", headers=recruiter).json() == []
+    candidate_assessment = client.get("/api/candidate/assessments", headers=candidate).json()[0]
+    assert candidate_assessment["id"] == assessment_id
+    assert candidate_assessment["is_archived"] is False
+    assert client.post(
+        f"/api/candidate/assessments/{assessment_id}/attempts",
+        headers=candidate,
+    ).status_code == 409
+    assert client.post(f"/api/assessments/{assessment_id}/unarchive", headers=recruiter).status_code == 409
+    assert client.post(f"/api/assessments/{assessment_id}/archive", headers=recruiter).status_code == 200
+
+
+def test_archive_and_unarchive_require_authorized_assessment_and_valid_state(client):
+    recruiter = auth(client, "archive-auth@example.com", "Archive Auth Org")
+    other_recruiter = auth(client, "archive-other@example.com", "Other Archive Org")
+    assessment_id = published_assessment(client, recruiter)
+
+    assert client.post(f"/api/assessments/{assessment_id}/archive").status_code == 401
+    assert client.post(f"/api/assessments/{assessment_id}/archive", headers=other_recruiter).status_code == 404
+    assert client.post(f"/api/assessments/{assessment_id}/unarchive", headers=other_recruiter).status_code == 404
+    assert client.post("/api/assessments/not-an-assessment/archive", headers=recruiter).status_code == 404
+    assert client.post("/api/assessments/not-an-assessment/unarchive", headers=recruiter).status_code == 404
+    assert client.post(f"/api/assessments/{assessment_id}/unarchive", headers=recruiter).status_code == 409
+
+
+def test_archived_pending_invitation_is_preserved_and_can_be_used_after_restore(client):
+    recruiter = auth(client, "archive-pending@example.com", "Archive Pending Org")
+    assessment_id = published_assessment(client, recruiter)
+    invitation = client.post(
+        f"/api/assessments/{assessment_id}/invitations",
+        headers=recruiter,
+        json={"email": "pending-candidate@example.com"},
+    ).json()
+    token = parse_qs(urlparse(invitation["invitation_url"]).query)["token"][0]
+
+    assert client.post(f"/api/assessments/{assessment_id}/archive", headers=recruiter).status_code == 200
+    rows = client.get(f"/api/assessments/{assessment_id}/invitations", headers=recruiter)
+    assert rows.status_code == 200
+    assert len(rows.json()) == 1
+    assert rows.json()[0]["id"] == invitation["id"]
+    assert rows.json()[0]["accepted_at"] is None
+    assert client.delete(f"/api/assessments/{assessment_id}", headers=recruiter).status_code == 409
+    rejected = client.post("/api/invitations/accept", json={
+        "token": token,
+        "full_name": "Pending Candidate",
+        "password": "a-strong-candidate-password",
+    })
+    assert rejected.status_code == 409
+
+    assert client.post(f"/api/assessments/{assessment_id}/unarchive", headers=recruiter).status_code == 200
+    accepted = client.post("/api/invitations/accept", json={
+        "token": token,
+        "full_name": "Pending Candidate",
+        "password": "a-strong-candidate-password",
+    })
+    assert accepted.status_code == 201
+    candidate = {"Authorization": f"Bearer {accepted.json()['access_token']}"}
+    assert client.get("/api/candidate/assessments", headers=candidate).json()[0]["id"] == assessment_id
 
 
 def test_publish_requires_questions_and_hiding_test_cases(client):

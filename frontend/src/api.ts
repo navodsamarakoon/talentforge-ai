@@ -30,6 +30,8 @@ export type Assessment = {
   time_limit_minutes: number;
   allow_multiple_attempts: boolean;
   is_published: boolean;
+  is_archived: boolean;
+  has_candidate_records: boolean;
   created_at: string;
   published_at: string | null;
   questions: Question[];

@@ -112,6 +112,8 @@ class AssessmentView(BaseModel):
     time_limit_minutes: int
     allow_multiple_attempts: bool
     is_published: bool
+    is_archived: bool
+    has_candidate_records: bool = False
     created_at: datetime
     published_at: datetime | None
     questions: list[QuestionView] = Field(default_factory=list)

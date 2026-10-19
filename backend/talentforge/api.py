@@ -107,14 +107,25 @@ def _audit(db: Session, actor: User | None, action: str, entity_type: str, entit
     ))
 
 
-def _org_assessment(db: Session, assessment_id: str, recruiter: User) -> Assessment:
-    assessment = db.scalar(select(Assessment).where(
+def _org_assessment(db: Session, assessment_id: str, recruiter: User, lock: bool = False) -> Assessment:
+    scope = (
         Assessment.id == assessment_id,
         Assessment.organization_id == recruiter.organization_id,
-    ).options(joinedload(Assessment.questions).joinedload(Question.test_cases)))
+    )
+    if lock:
+        locked_id = db.scalar(select(Assessment.id).where(*scope).with_for_update())
+        if locked_id is None:
+            raise HTTPException(status_code=404, detail="Assessment not found.")
+    assessment = db.scalar(select(Assessment).where(*scope)
+        .options(joinedload(Assessment.questions).joinedload(Question.test_cases)))
     if assessment is None:
         raise HTTPException(status_code=404, detail="Assessment not found.")
     return assessment
+
+
+def _ensure_active(assessment: Assessment) -> None:
+    if assessment.is_archived:
+        raise HTTPException(status_code=409, detail="Archived assessments must be restored before they can be changed.")
 
 
 def _question_view(question: Question, show_hidden: bool) -> dict[str, Any]:
@@ -137,7 +148,11 @@ def _question_view(question: Question, show_hidden: bool) -> dict[str, Any]:
     }
 
 
-def _assessment_view(assessment: Assessment, show_hidden: bool = False) -> dict[str, Any]:
+def _assessment_view(
+    assessment: Assessment,
+    show_hidden: bool = False,
+    has_candidate_records: bool = False,
+) -> dict[str, Any]:
     return {
         "id": assessment.id,
         "title": assessment.title,
@@ -146,6 +161,8 @@ def _assessment_view(assessment: Assessment, show_hidden: bool = False) -> dict[
         "time_limit_minutes": assessment.time_limit_minutes,
         "allow_multiple_attempts": assessment.allow_multiple_attempts,
         "is_published": assessment.is_published,
+        "is_archived": assessment.is_archived,
+        "has_candidate_records": has_candidate_records,
         "created_at": assessment.created_at,
         "published_at": assessment.published_at,
         "questions": [_question_view(question, show_hidden) for question in assessment.questions],
@@ -321,6 +338,13 @@ def accept_invitation(payload: AcceptInvitationRequest, db: Db) -> AuthResponse:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at <= now:
         raise HTTPException(status_code=400, detail="Invitation has expired.")
+    assessment = db.scalar(
+        select(Assessment).where(Assessment.id == invitation.assessment_id).with_for_update()
+    )
+    if assessment is None:
+        raise HTTPException(status_code=400, detail="Invitation is invalid, revoked, or already used.")
+    if assessment.is_archived:
+        raise HTTPException(status_code=409, detail="This assessment is archived and cannot accept invitations.")
     existing_user = db.scalar(select(User).where(User.email == invitation.email))
     if existing_user is not None:
         if existing_user.role != "candidate" or not verify_password(payload.password, existing_user.password_hash):
@@ -397,11 +421,31 @@ def create_assessment(
 def list_assessments(
     db: Db,
     recruiter: Annotated[User, Depends(require_role("recruiter"))],
+    archived: bool = Query(default=False),
 ) -> list[dict[str, Any]]:
-    rows = db.scalars(select(Assessment).where(Assessment.organization_id == recruiter.organization_id)
+    rows = db.scalars(select(Assessment).where(
+        Assessment.organization_id == recruiter.organization_id,
+        Assessment.is_archived.is_(archived),
+    )
         .options(joinedload(Assessment.questions).joinedload(Question.test_cases))
         .order_by(Assessment.created_at.desc())).unique().all()
-    return [_assessment_view(row, show_hidden=True) for row in rows]
+    assessment_ids = [row.id for row in rows]
+    if not assessment_ids:
+        return []
+    invitation_ids = set(db.scalars(select(Invitation.assessment_id).where(
+        Invitation.assessment_id.in_(assessment_ids),
+    )).all())
+    attempt_ids = set(db.scalars(select(Attempt.assessment_id).where(
+        Attempt.assessment_id.in_(assessment_ids),
+    )).all())
+    return [
+        _assessment_view(
+            row,
+            show_hidden=True,
+            has_candidate_records=row.id in invitation_ids or row.id in attempt_ids,
+        )
+        for row in rows
+    ]
 
 
 @router.get("/assessments/{assessment_id}", response_model=AssessmentView)
@@ -420,12 +464,43 @@ def update_assessment(
     db: Db,
     recruiter: Annotated[User, Depends(require_role("recruiter"))],
 ) -> dict[str, Any]:
-    assessment = _org_assessment(db, assessment_id, recruiter)
+    assessment = _org_assessment(db, assessment_id, recruiter, lock=True)
+    _ensure_active(assessment)
     if assessment.is_published:
         raise HTTPException(status_code=409, detail="Published assessments cannot be edited.")
     for key, value in payload.model_dump().items():
         setattr(assessment, key, value)
     _audit(db, recruiter, "assessment.updated", "assessment", assessment.id)
+    db.commit()
+    return _assessment_view(assessment, show_hidden=True)
+
+
+@router.post("/assessments/{assessment_id}/archive", response_model=AssessmentView)
+def archive_assessment(
+    assessment_id: str,
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> dict[str, Any]:
+    assessment = _org_assessment(db, assessment_id, recruiter, lock=True)
+    if assessment.is_archived:
+        raise HTTPException(status_code=409, detail="Assessment is already archived.")
+    assessment.is_archived = True
+    _audit(db, recruiter, "assessment.archived", "assessment", assessment.id)
+    db.commit()
+    return _assessment_view(assessment, show_hidden=True)
+
+
+@router.post("/assessments/{assessment_id}/unarchive", response_model=AssessmentView)
+def unarchive_assessment(
+    assessment_id: str,
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> dict[str, Any]:
+    assessment = _org_assessment(db, assessment_id, recruiter, lock=True)
+    if not assessment.is_archived:
+        raise HTTPException(status_code=409, detail="Assessment is not archived.")
+    assessment.is_archived = False
+    _audit(db, recruiter, "assessment.unarchived", "assessment", assessment.id)
     db.commit()
     return _assessment_view(assessment, show_hidden=True)
 
@@ -471,7 +546,8 @@ def add_question(
     db: Db,
     recruiter: Annotated[User, Depends(require_role("recruiter"))],
 ) -> dict[str, Any]:
-    assessment = _org_assessment(db, assessment_id, recruiter)
+    assessment = _org_assessment(db, assessment_id, recruiter, lock=True)
+    _ensure_active(assessment)
     if assessment.is_published:
         raise HTTPException(status_code=409, detail="Published assessments cannot be edited.")
     question = Question(
@@ -494,7 +570,8 @@ def update_question(
     db: Db,
     recruiter: Annotated[User, Depends(require_role("recruiter"))],
 ) -> dict[str, Any]:
-    assessment = _org_assessment(db, assessment_id, recruiter)
+    assessment = _org_assessment(db, assessment_id, recruiter, lock=True)
+    _ensure_active(assessment)
     if assessment.is_published:
         raise HTTPException(status_code=409, detail="Published assessments cannot be edited.")
     question = _load_question(db, assessment_id, question_id)
@@ -515,7 +592,8 @@ def publish_assessment(
     db: Db,
     recruiter: Annotated[User, Depends(require_role("recruiter"))],
 ) -> dict[str, Any]:
-    assessment = _org_assessment(db, assessment_id, recruiter)
+    assessment = _org_assessment(db, assessment_id, recruiter, lock=True)
+    _ensure_active(assessment)
     if assessment.is_published:
         return _assessment_view(assessment, show_hidden=True)
     if not assessment.questions:
@@ -537,7 +615,8 @@ def create_invitation(
     db: Db,
     recruiter: Annotated[User, Depends(require_role("recruiter"))],
 ) -> dict[str, Any]:
-    assessment = _org_assessment(db, assessment_id, recruiter)
+    assessment = _org_assessment(db, assessment_id, recruiter, lock=True)
+    _ensure_active(assessment)
     if not assessment.is_published:
         raise HTTPException(status_code=409, detail="Publish the assessment before inviting candidates.")
     raw_token = create_invitation_token()
@@ -603,14 +682,21 @@ def candidate_assessments(
         Invitation.candidate_id == candidate.id, Invitation.accepted_at.is_not(None),
         Invitation.revoked_at.is_(None),
     )).all()
-    assessments = []
-    for invite in invitations:
-        assessment = db.scalar(select(Assessment).where(
-            Assessment.id == invite.assessment_id, Assessment.is_published.is_(True),
-        ).options(joinedload(Assessment.questions).joinedload(Question.test_cases)))
-        if assessment is not None:
-            assessments.append(_assessment_view(assessment, show_hidden=False))
-    return assessments
+    historical_attempts = db.scalars(select(Attempt).where(Attempt.candidate_id == candidate.id)).all()
+    assessment_ids = {invite.assessment_id for invite in invitations}
+    assessment_ids.update(attempt.assessment_id for attempt in historical_attempts)
+    if not assessment_ids:
+        return []
+    rows = db.scalars(select(Assessment).where(
+        Assessment.id.in_(assessment_ids),
+        Assessment.is_published.is_(True),
+    ).options(joinedload(Assessment.questions).joinedload(Question.test_cases))).unique().all()
+    attempted_assessment_ids = {attempt.assessment_id for attempt in historical_attempts}
+    return [
+        _assessment_view(assessment, show_hidden=False)
+        for assessment in rows
+        if not assessment.is_archived or assessment.id in attempted_assessment_ids
+    ]
 
 
 @router.get("/candidate/attempts", response_model=list[dict])
@@ -642,11 +728,21 @@ def start_attempt(
         Invitation.assessment_id == assessment_id, Invitation.candidate_id == candidate.id,
         Invitation.accepted_at.is_not(None), Invitation.revoked_at.is_(None),
     ))
+    if invitation is None:
+        raise HTTPException(status_code=404, detail="Authorized assessment not found.")
+    locked_id = db.scalar(select(Assessment.id).where(
+        Assessment.id == assessment_id,
+        Assessment.is_published.is_(True),
+    ).with_for_update())
+    if locked_id is None:
+        raise HTTPException(status_code=404, detail="Authorized assessment not found.")
     assessment = db.scalar(select(Assessment).where(
         Assessment.id == assessment_id, Assessment.is_published.is_(True),
     ).options(joinedload(Assessment.questions).joinedload(Question.test_cases)))
-    if invitation is None or assessment is None:
+    if assessment is None:
         raise HTTPException(status_code=404, detail="Authorized assessment not found.")
+    if assessment.is_archived:
+        raise HTTPException(status_code=409, detail="This assessment is archived and cannot start new attempts.")
     existing = db.scalars(select(Attempt).where(
         Attempt.assessment_id == assessment_id, Attempt.candidate_id == candidate.id,
     )).all()
