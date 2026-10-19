@@ -105,9 +105,19 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     },
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { detail?: string | { message?: string } } | null;
+    const body = await response.json().catch(() => null) as {
+      detail?: string | { message?: string } | { msg?: string; loc?: (string | number)[] }[];
+    } | null;
     const detail = body?.detail;
-    throw new Error(typeof detail === "string" ? detail : detail?.message ?? `Request failed (${response.status}).`);
+    const message = typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map(item => {
+          const location = item.loc?.filter(part => part !== "body").join(".");
+          return location ? `${location}: ${item.msg ?? "Invalid value."}` : item.msg ?? "Invalid value.";
+        }).join(" ")
+        : detail?.message;
+    throw new Error(message ? `Request failed (${response.status}): ${message}` : `Request failed (${response.status}).`);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

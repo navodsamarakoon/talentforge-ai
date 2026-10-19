@@ -62,6 +62,14 @@ class AssessmentCreate(BaseModel):
     time_limit_minutes: int = Field(ge=5, le=480)
     allow_multiple_attempts: bool = False
 
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Title must contain at least one non-whitespace character.")
+        return normalized
+
 
 class AssessmentUpdate(AssessmentCreate):
     pass

@@ -2,7 +2,7 @@ from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
 from talentforge.api import get_sandbox
-from talentforge.models import Attempt, Invitation, utcnow
+from talentforge.models import Assessment, Attempt, Invitation, Question, utcnow
 from talentforge.sandbox import CaseResult
 from talentforge.schemas import EvaluationOutput
 
@@ -145,6 +145,170 @@ def test_organization_isolation_and_role_permissions(client):
         "role": "Software Engineer",
         "time_limit_minutes": 30,
     }).status_code == 201
+
+
+def test_assessment_crud_persists_and_enforces_organization_and_lifecycle(client, db_session):
+    recruiter = auth(client, "crud@example.com", "CRUD Org")
+    other_recruiter = auth(client, "crud-other@example.com", "Other CRUD Org")
+    payload = {
+        "title": "  CRUD assessment  ",
+        "role": "Software Engineer",
+        "instructions": "Read carefully.",
+        "time_limit_minutes": 45,
+        "allow_multiple_attempts": True,
+    }
+
+    created_response = client.post("/api/assessments", headers=recruiter, json=payload)
+    assert created_response.status_code == 201, created_response.text
+    created = created_response.json()
+    assessment_id = created["id"]
+    assert created["title"] == "CRUD assessment"
+    assert client.post("/api/assessments", json=payload).status_code == 401
+
+    listed = client.get("/api/assessments", headers=recruiter)
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()] == [assessment_id]
+    assert client.get(f"/api/assessments/{assessment_id}", headers=recruiter).json()["title"] == "CRUD assessment"
+
+    updated_response = client.patch(f"/api/assessments/{assessment_id}", headers=recruiter, json={
+        **payload,
+        "title": "Updated CRUD assessment",
+        "role": "Software Engineering Intern",
+        "instructions": "Updated instructions.",
+        "time_limit_minutes": 60,
+        "allow_multiple_attempts": False,
+    })
+    assert updated_response.status_code == 200, updated_response.text
+    assert updated_response.json()["title"] == "Updated CRUD assessment"
+    assert updated_response.json()["role"] == "Software Engineering Intern"
+    assert updated_response.json()["instructions"] == "Updated instructions."
+    assert updated_response.json()["time_limit_minutes"] == 60
+    assert updated_response.json()["allow_multiple_attempts"] is False
+    db_session.expire_all()
+    persisted = db_session.get(Assessment, assessment_id)
+    assert persisted is not None
+    assert persisted.title == "Updated CRUD assessment"
+    assert persisted.role == "Software Engineering Intern"
+    assert persisted.instructions == "Updated instructions."
+    assert persisted.time_limit_minutes == 60
+    assert persisted.allow_multiple_attempts is False
+    fetched_again = client.get(f"/api/assessments/{assessment_id}", headers=recruiter)
+    assert fetched_again.status_code == 200
+    assert fetched_again.json()["title"] == "Updated CRUD assessment"
+    assert fetched_again.json()["instructions"] == "Updated instructions."
+
+    assert client.patch(f"/api/assessments/{assessment_id}", headers=recruiter, json={
+        **payload,
+        "time_limit_minutes": 4,
+    }).status_code == 422
+    assert client.patch("/api/assessments/not-an-id", headers=recruiter, json=payload).status_code == 404
+    assert client.get(f"/api/assessments/{assessment_id}", headers=other_recruiter).status_code == 404
+    assert client.patch(f"/api/assessments/{assessment_id}", headers=other_recruiter, json=payload).status_code == 404
+    assert client.delete(f"/api/assessments/{assessment_id}", headers=other_recruiter).status_code == 404
+    assert client.patch(f"/api/assessments/{assessment_id}", json=payload).status_code == 401
+
+    invitation = client.post(f"/api/assessments/{assessment_id}/invitations", headers=recruiter, json={
+        "email": "invited@example.com",
+    })
+    assert invitation.status_code == 409  # Drafts cannot have invitations.
+    deleted = client.delete(f"/api/assessments/{assessment_id}", headers=recruiter)
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/assessments/{assessment_id}", headers=recruiter).status_code == 404
+    assert client.get("/api/assessments", headers=recruiter).json() == []
+
+    invalid_create = client.post("/api/assessments", headers=recruiter, json={
+        **payload,
+        "title": "   ",
+    })
+    assert invalid_create.status_code == 422
+    assert client.delete("/api/assessments/not-an-id", headers=recruiter).status_code == 404
+
+
+def test_assessment_with_candidate_invitation_cannot_be_deleted(client):
+    recruiter = auth(client, "lifecycle@example.com", "Lifecycle Org")
+    assessment_id = published_assessment(client, recruiter)
+    invitation = client.post(f"/api/assessments/{assessment_id}/invitations", headers=recruiter, json={
+        "email": "lifecycle-candidate@example.com",
+    })
+    assert invitation.status_code == 201
+    token = parse_qs(urlparse(invitation.json()["invitation_url"]).query)["token"][0]
+    accepted = client.post("/api/invitations/accept", json={
+        "token": token,
+        "full_name": "Lifecycle Candidate",
+        "password": "a-strong-candidate-password",
+    })
+    assert accepted.status_code == 201
+    candidate = {"Authorization": f"Bearer {accepted.json()['access_token']}"}
+    attempt = client.post(f"/api/candidate/assessments/{assessment_id}/attempts", headers=candidate)
+    assert attempt.status_code == 201, attempt.text
+    response = client.delete(f"/api/assessments/{assessment_id}", headers=recruiter)
+    assert response.status_code == 409
+    assert client.get(f"/api/assessments/{assessment_id}", headers=recruiter).status_code == 200
+
+
+def test_question_update_persists_fields_and_hidden_test_flags(client, db_session):
+    recruiter = auth(client, "question-update@example.com", "Question Update Org")
+    other_recruiter = auth(client, "question-update-other@example.com", "Other Question Org")
+    assessment = client.post("/api/assessments", headers=recruiter, json={
+        "title": "Question editing",
+        "role": "Software Engineer",
+        "time_limit_minutes": 30,
+    }).json()
+    created = client.post(f"/api/assessments/{assessment['id']}/questions", headers=recruiter, json={
+        "position": 0,
+        "title": "Add values",
+        "prompt": "Add two inputs.",
+        "function_name": "add",
+        "starter_code": "def add(a, b): pass",
+        "test_cases": [
+            {"input_args": [1, 2], "expected_output": 3, "is_hidden": False},
+            {"input_args": [4, 5], "expected_output": 9, "is_hidden": True},
+        ],
+    })
+    assert created.status_code == 201, created.text
+    question_id = created.json()["questions"][0]["id"]
+
+    response = client.patch(f"/api/assessments/{assessment['id']}/questions/{question_id}", headers=recruiter, json={
+        "position": 2,
+        "title": "Sum integers",
+        "prompt": "Return the sum of both integers.",
+        "function_name": "sum_values",
+        "starter_code": "def sum_values(a, b):\n    return a + b",
+        "test_cases": [
+            {"input_args": [3, 4], "expected_output": 7, "is_hidden": False},
+            {"input_args": [8, 9], "expected_output": 17, "is_hidden": True},
+        ],
+    })
+    assert response.status_code == 200, response.text
+    returned = response.json()["questions"][0]
+    assert returned["title"] == "Sum integers"
+    assert returned["position"] == 2
+    assert returned["function_name"] == "sum_values"
+    assert [case["is_hidden"] for case in returned["test_cases"]] == [False, True]
+
+    db_session.expire_all()
+    persisted = db_session.get(Question, question_id)
+    assert persisted is not None
+    assert (persisted.title, persisted.position, persisted.function_name) == ("Sum integers", 2, "sum_values")
+    assert [(case.input_args, case.expected_output, case.is_hidden) for case in persisted.test_cases] == [
+        ([3, 4], 7, False),
+        ([8, 9], 17, True),
+    ]
+    fetched = client.get(f"/api/assessments/{assessment['id']}", headers=recruiter)
+    assert fetched.status_code == 200
+    assert fetched.json()["questions"][0]["title"] == "Sum integers"
+    assert client.patch(f"/api/assessments/{assessment['id']}/questions/missing-question", headers=recruiter, json={
+        "title": "Should not exist",
+    }).status_code == 404
+    assert client.patch(f"/api/assessments/{assessment['id']}/questions/{question_id}", headers=other_recruiter, json={
+        "title": "Unauthorized",
+    }).status_code == 404
+    assert client.patch(f"/api/assessments/{assessment['id']}/questions/{question_id}", json={
+        "title": "Unauthenticated",
+    }).status_code == 401
+    assert client.patch(f"/api/assessments/{assessment['id']}/questions/{question_id}", headers=recruiter, json={
+        "function_name": "not valid",
+    }).status_code == 422
 
 
 def test_revoked_invitation_cannot_be_accepted(client):

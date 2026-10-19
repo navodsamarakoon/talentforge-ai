@@ -42,6 +42,7 @@ from talentforge.schemas import (
     RunRequest,
     SubmissionRequest,
     SubmissionView,
+    TestCaseInput,
     UserView,
 )
 from talentforge.security import (
@@ -161,7 +162,7 @@ def _load_question(db: Session, assessment_id: str, question_id: str) -> Questio
     return question
 
 
-def _set_test_cases(question: Question, case_inputs: list[Any]) -> None:
+def _set_test_cases(question: Question, case_inputs: list[TestCaseInput]) -> None:
     question.test_cases.clear()
     for index, case in enumerate(case_inputs):
         question.test_cases.append(TestCase(
@@ -429,6 +430,40 @@ def update_assessment(
     return _assessment_view(assessment, show_hidden=True)
 
 
+@router.delete("/assessments/{assessment_id}", status_code=204)
+def delete_assessment(
+    assessment_id: str,
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> None:
+    # Serialize deletion against new invitation and attempt rows referencing this assessment.
+    locked_id = db.scalar(select(Assessment.id).where(
+        Assessment.id == assessment_id,
+        Assessment.organization_id == recruiter.organization_id,
+    ).with_for_update())
+    if locked_id is None:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+    assessment = _org_assessment(db, assessment_id, recruiter)
+    has_attempts = db.scalar(select(Attempt.id).where(Attempt.assessment_id == assessment.id).limit(1))
+    has_invitations = db.scalar(select(Invitation.id).where(Invitation.assessment_id == assessment.id).limit(1))
+    if has_attempts or has_invitations:
+        raise HTTPException(
+            status_code=409,
+            detail="This assessment has candidate attempts or invitations and cannot be deleted.",
+        )
+
+    _audit(db, recruiter, "assessment.deleted", "assessment", assessment.id)
+    db.delete(assessment)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This assessment is linked to candidate records and cannot be deleted.",
+        ) from None
+
+
 @router.post("/assessments/{assessment_id}/questions", response_model=AssessmentView, status_code=201)
 def add_question(
     assessment_id: str,
@@ -463,8 +498,8 @@ def update_question(
     if assessment.is_published:
         raise HTTPException(status_code=409, detail="Published assessments cannot be edited.")
     question = _load_question(db, assessment_id, question_id)
-    values = payload.model_dump(exclude_unset=True)
-    cases = values.pop("test_cases", None)
+    values = payload.model_dump(exclude_unset=True, exclude={"test_cases"})
+    cases = payload.test_cases if "test_cases" in payload.model_fields_set else None
     for key, value in values.items():
         setattr(question, key, value)
     if cases is not None:
