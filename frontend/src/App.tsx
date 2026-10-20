@@ -1,7 +1,7 @@
 import { Fragment, type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { loader } from "@monaco-editor/react";
-import { Archive, ArrowRight, BriefcaseBusiness, Check, CircleAlert, Clock3, Code2, Copy, FilePlus2, LogOut, Plus, ShieldCheck, Sparkles, Users, X } from "lucide-react";
+import { Archive, ArrowRight, BriefcaseBusiness, Check, CircleAlert, Clock3, Code2, Copy, FilePlus2, LogOut, Plus, ShieldCheck, Users, X } from "lucide-react";
 import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, Assessment, Attempt, clearAuth, getUser, Report, saveAuth, SubmissionStatus, User } from "./api";
 
@@ -32,7 +32,7 @@ function Shell({ user, children }: { user?: User | null; children: ReactNode }) 
   };
   return <div className="app-shell">
     <header className="topbar">
-      <Link to={user?.role === "candidate" ? "/candidate" : "/recruiter"} className="brand"><span className="brand-icon"><Sparkles size={18} /></span>talentforge<span className="brand-ai">AI</span></Link>
+      <Link to={user?.role === "candidate" ? "/candidate" : "/recruiter"} className="brand"><img className="brand-icon" src="/talentforge-mark.svg" alt="" />talentforge<span className="brand-ai">AI</span></Link>
       {user && <nav className="top-nav">
         {user.role === "recruiter" ? <Link to="/recruiter">Workspace</Link> : <Link to="/candidate">My assessments</Link>}
         <div className="user-menu"><span className="avatar">{user.full_name.slice(0, 1).toUpperCase()}</span><span className="user-name">{user.full_name}</span><button className="icon-button" aria-label="Log out" onClick={() => void logout()}><LogOut size={16} /></button></div>
