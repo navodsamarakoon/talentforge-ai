@@ -45,12 +45,60 @@ function Shell({ user, children }: { user?: User | null; children: ReactNode }) 
 
 function AuthPage({ mode }: { mode: "login" | "register" }) {
   const navigate = useNavigate();
+  const authGlowRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [organization, setOrganization] = useState("");
+  useEffect(() => {
+    const page = authGlowRef.current;
+    if (!page || typeof window.matchMedia !== "function") return;
+    if (!window.matchMedia("(pointer: fine)").matches || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const glow = page.querySelector<HTMLElement>(".auth-cursor-glow");
+    if (!glow) return;
+    let frame = 0;
+    let x = page.clientWidth / 2;
+    let y = page.clientHeight / 2;
+    let opacity = 0;
+    let targetX = x;
+    let targetY = y;
+    let targetOpacity = 0;
+
+    const animate = () => {
+      x += (targetX - x) * .12;
+      y += (targetY - y) * .12;
+      opacity += (targetOpacity - opacity) * .12;
+      glow.style.setProperty("--cursor-glow-x", `${x}px`);
+      glow.style.setProperty("--cursor-glow-y", `${y}px`);
+      glow.style.setProperty("--cursor-glow-opacity", opacity.toFixed(3));
+      if (Math.abs(targetX - x) > .2 || Math.abs(targetY - y) > .2 || Math.abs(targetOpacity - opacity) > .01) {
+        frame = window.requestAnimationFrame(animate);
+      } else {
+        frame = 0;
+      }
+    };
+    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(animate); };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return;
+      const bounds = page.getBoundingClientRect();
+      targetX = event.clientX - bounds.left;
+      targetY = event.clientY - bounds.top;
+      targetOpacity = .88;
+      schedule();
+    };
+    const onPointerLeave = () => { targetOpacity = 0; schedule(); };
+
+    page.addEventListener("pointermove", onPointerMove, { passive: true });
+    page.addEventListener("pointerleave", onPointerLeave, { passive: true });
+    return () => {
+      page.removeEventListener("pointermove", onPointerMove);
+      page.removeEventListener("pointerleave", onPointerLeave);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [mode]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true); setError("");
@@ -64,7 +112,9 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not authenticate."); }
     finally { setBusy(false); }
   };
-  return <Shell><div className="auth-layout">
+  return <Shell><div className="auth-glow-page" ref={authGlowRef}>
+    <div className="auth-cursor-glow" aria-hidden="true" />
+    <div className="auth-layout">
     <section className="auth-story">
       <span className="eyebrow"><span className="eyebrow-dot" />Assessment, with evidence</span>
       <h1>Find the thinking<br />behind the code.</h1>
@@ -85,7 +135,7 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
       </form>
       <p className="auth-switch">{mode === "login" ? "New to TalentForge?" : "Already have an account?"} <Link to={mode === "login" ? "/register" : "/login"}>{mode === "login" ? "Create an account" : "Sign in"}</Link></p>
     </section>
-  </div></Shell>;
+  </div></div></Shell>;
 }
 
 function AcceptInvitation() {

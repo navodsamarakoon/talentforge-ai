@@ -29,14 +29,28 @@ describe("authentication workflow", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
-    render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
+    const { container } = render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
+    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
     await user.type(screen.getByLabelText("Work email"), "recruiter@example.test");
     await user.type(screen.getByLabelText("Password"), "password");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     expect(await screen.findByText("Your first assessment is one step away.")).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("talentforge-token")).toBe("signed-token");
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/auth/login", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("keeps the cursor glow on both login and registration while navigating between them", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
+    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Create an account" }));
+    expect(screen.getByRole("heading", { name: "Create your workspace" })).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Sign in" }));
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
   });
 });
 

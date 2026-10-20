@@ -257,6 +257,17 @@ body { font-family: "Manrope", system-ui, sans-serif; }
 .loading { color: #b8aea3; }
 .spinner { border-color: #3a3029; border-top-color: #ff854d; }
 .auth-layout { max-width: 1120px; gap: clamp(36px, 7vw, 92px); }
+.auth-glow-page { position: relative; isolation: isolate; }
+.auth-glow-page > .auth-layout { position: relative; z-index: 1; }
+.auth-cursor-glow {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--cursor-glow-opacity, 0);
+  background: radial-gradient(ellipse 520px 430px at var(--cursor-glow-x, 50%) var(--cursor-glow-y, 48%), rgba(255,133,77,.19) 0%, rgba(255,133,77,.09) 34%, rgba(255,133,77,.035) 53%, transparent 76%);
+  transition: opacity 180ms ease-out;
+}
 .auth-story h1 { color: #f3efe9; font-weight: 600; letter-spacing: -2.5px; }
 .auth-story > p, .muted { color: #b8aea3; }
 .story-points > div > span { border-color: #3a3029; background: #101110; color: #ff854d; }
@@ -293,6 +304,10 @@ body { font-family: "Manrope", system-ui, sans-serif; }
 input, textarea, select { border-color: #3a3029; background: #080909; color: #f3efe9; }
 input::placeholder, textarea::placeholder { color: #746b64; }
 input:focus, textarea:focus, select:focus { border-color: #ff854d; box-shadow: 0 0 0 3px rgba(255,133,77,.13); }
+.form-grid textarea.code-input { border-color: #3a3029; background: #080909; color: #f3efe9; caret-color: #ff854d; font: 12px/1.55 "DM Mono", monospace; }
+.form-grid textarea.code-input::placeholder { color: #9f9489; opacity: 1; }
+.form-grid textarea.code-input:focus { border-color: #ff854d; box-shadow: 0 0 0 3px rgba(255,133,77,.13); }
+.form-grid textarea.code-input::selection { background: rgba(255,133,77,.35); color: #f3efe9; }
 input[type="checkbox"] { accent-color: #ff854d; }
 .form-grid .span-two, .form-actions { color: #f3efe9; }
 .assessment-view-switch .button.primary { color: #080909; }
@@ -341,6 +356,10 @@ td b, .criterion-grid b { color: #f3efe9; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .auth-cursor-glow { --cursor-glow-x: 50% !important; --cursor-glow-y: 48% !important; --cursor-glow-opacity: .24 !important; }
+}
+@media (hover: none), (pointer: coarse) {
+  .auth-cursor-glow { --cursor-glow-x: 50% !important; --cursor-glow-y: 48% !important; --cursor-glow-opacity: .22 !important; }
 }
 
 @media (max-width: 850px) {
