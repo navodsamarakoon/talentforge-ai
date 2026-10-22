@@ -1,9 +1,12 @@
-import { Fragment, type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { loader } from "@monaco-editor/react";
 import { Archive, ArrowRight, BriefcaseBusiness, Check, CircleAlert, Clock3, Code2, Copy, FilePlus2, LogOut, Plus, ShieldCheck, Users, X } from "lucide-react";
 import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, Assessment, Attempt, clearAuth, getUser, Report, saveAuth, SubmissionStatus, User } from "./api";
+
+const RobotTestPage = lazy(() => import("./RobotTestPage"));
+const SplineRobot = lazy(() => import("./SplineRobot"));
 
 loader.config({ paths: { vs: "/vs" } });
 
@@ -22,7 +25,7 @@ function Protected({ role, children }: { role?: User["role"]; children: ReactNod
   return children;
 }
 
-function Shell({ user, children }: { user?: User | null; children: ReactNode }) {
+function Shell({ user, children, pageClassName = "" }: { user?: User | null; children: ReactNode; pageClassName?: string }) {
   const navigate = useNavigate();
   const logout = async () => {
     try { if (user) await api("/auth/logout", { method: "POST" }); } finally {
@@ -38,67 +41,19 @@ function Shell({ user, children }: { user?: User | null; children: ReactNode }) 
         <div className="user-menu"><span className="avatar">{user.full_name.slice(0, 1).toUpperCase()}</span><span className="user-name">{user.full_name}</span><button className="icon-button" aria-label="Log out" onClick={() => void logout()}><LogOut size={16} /></button></div>
       </nav>}
     </header>
-    <main className="page">{children}</main>
+    <main className={`page ${pageClassName}`.trim()}>{children}</main>
     <footer className="footer"><span>TalentForge AI</span><span>Technical assessment workspace</span></footer>
   </div>;
 }
 
 function AuthPage({ mode }: { mode: "login" | "register" }) {
   const navigate = useNavigate();
-  const authGlowRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [organization, setOrganization] = useState("");
-  useEffect(() => {
-    const page = authGlowRef.current;
-    if (!page || typeof window.matchMedia !== "function") return;
-    if (!window.matchMedia("(pointer: fine)").matches || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-
-    const glow = page.querySelector<HTMLElement>(".auth-cursor-glow");
-    if (!glow) return;
-    let frame = 0;
-    let x = page.clientWidth / 2;
-    let y = page.clientHeight / 2;
-    let opacity = 0;
-    let targetX = x;
-    let targetY = y;
-    let targetOpacity = 0;
-
-    const animate = () => {
-      x += (targetX - x) * .12;
-      y += (targetY - y) * .12;
-      opacity += (targetOpacity - opacity) * .12;
-      glow.style.setProperty("--cursor-glow-x", `${x}px`);
-      glow.style.setProperty("--cursor-glow-y", `${y}px`);
-      glow.style.setProperty("--cursor-glow-opacity", opacity.toFixed(3));
-      if (Math.abs(targetX - x) > .2 || Math.abs(targetY - y) > .2 || Math.abs(targetOpacity - opacity) > .01) {
-        frame = window.requestAnimationFrame(animate);
-      } else {
-        frame = 0;
-      }
-    };
-    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(animate); };
-    const onPointerMove = (event: PointerEvent) => {
-      if (event.pointerType === "touch") return;
-      const bounds = page.getBoundingClientRect();
-      targetX = event.clientX - bounds.left;
-      targetY = event.clientY - bounds.top;
-      targetOpacity = .88;
-      schedule();
-    };
-    const onPointerLeave = () => { targetOpacity = 0; schedule(); };
-
-    page.addEventListener("pointermove", onPointerMove, { passive: true });
-    page.addEventListener("pointerleave", onPointerLeave, { passive: true });
-    return () => {
-      page.removeEventListener("pointermove", onPointerMove);
-      page.removeEventListener("pointerleave", onPointerLeave);
-      if (frame) window.cancelAnimationFrame(frame);
-    };
-  }, [mode]);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true); setError("");
@@ -112,9 +67,7 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not authenticate."); }
     finally { setBusy(false); }
   };
-  return <Shell><div className="auth-glow-page" ref={authGlowRef}>
-    <div className="auth-cursor-glow" aria-hidden="true" />
-    <div className="auth-layout">
+  return <Shell pageClassName={mode === "login" ? "auth-page auth-login-page" : "auth-page"}><div className="auth-layout auth-composition-layout">
     <section className="auth-story">
       <span className="eyebrow"><span className="eyebrow-dot" />Assessment, with evidence</span>
       <h1>Find the thinking<br />behind the code.</h1>
@@ -122,6 +75,9 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
       <div className="story-points"><div><span><ShieldCheck size={17} /></span><div><b>Fair by design</b><small>Consistent questions and test coverage.</small></div></div><div><span><Code2 size={17} /></span><div><b>Built for real work</b><small>Candidates solve in a focused Python workspace.</small></div></div></div>
       <div className="auth-decoration"><div className="decor-line">def evaluate(solution):</div><div className="decor-line indent">return evidence, not guesswork</div></div>
     </section>
+    <div className="auth-robot-stage" aria-label="TalentForge AI animated robot">
+      <Suspense fallback={<div className="auth-robot-fallback" role="status">Loading robot…</div>}><SplineRobot /></Suspense>
+    </div>
     <section className="auth-card">
       <div className="card-mark"><BriefcaseBusiness size={20} /></div>
       <h2>{mode === "login" ? "Welcome back" : "Create your workspace"}</h2>
@@ -135,7 +91,7 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
       </form>
       <p className="auth-switch">{mode === "login" ? "New to TalentForge?" : "Already have an account?"} <Link to={mode === "login" ? "/register" : "/login"}>{mode === "login" ? "Create an account" : "Sign in"}</Link></p>
     </section>
-  </div></div></Shell>;
+  </div></Shell>;
 }
 
 function AcceptInvitation() {
@@ -520,6 +476,7 @@ function CodingAttempt() {
 
 export default function App() {
   return <Routes>
+    <Route path="/robot-test" element={<Suspense fallback={<div className="robot-test-loading-page" />}><RobotTestPage /></Suspense>} />
     <Route path="/login" element={getUser() ? <Navigate to={getUser()?.role === "recruiter" ? "/recruiter" : "/candidate"} replace /> : <AuthPage mode="login" />} />
     <Route path="/register" element={<AuthPage mode="register" />} />
     <Route path="/accept-invitation" element={<AcceptInvitation />} />

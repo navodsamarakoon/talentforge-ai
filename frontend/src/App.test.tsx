@@ -5,6 +5,8 @@ import { MemoryRouter } from "react-router-dom";
 import App from "./App";
 import { Assessment, saveAuth, User } from "./api";
 
+vi.mock("@splinetool/react-spline", () => ({ default: () => null }));
+
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
@@ -29,28 +31,47 @@ describe("authentication workflow", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
-    const { container } = render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
     await user.type(screen.getByLabelText("Work email"), "recruiter@example.test");
     await user.type(screen.getByLabelText("Password"), "password");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     expect(await screen.findByText("Your first assessment is one step away.")).toBeInTheDocument();
-    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("talentforge-token")).toBe("signed-token");
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/auth/login", expect.objectContaining({ method: "POST" }));
   });
 
-  it("keeps the cursor glow on both login and registration while navigating between them", async () => {
+  it("keeps login and registration navigation working with the shared robot stage", async () => {
     const user = userEvent.setup();
     const { container } = render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    expect(container.querySelector(".auth-login-page")).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+    expect(container.querySelector(".auth-robot-stage")).toBeInTheDocument();
+    expect(container.querySelector(".auth-card")).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Create an account" }));
     expect(screen.getByRole("heading", { name: "Create your workspace" })).toBeInTheDocument();
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    expect(container.querySelector(".auth-login-page")).not.toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+    expect(container.querySelector(".auth-robot-stage")).toBeInTheDocument();
+    expect(screen.getByLabelText("Full name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Organization")).toBeInTheDocument();
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Sign in" }));
     expect(screen.getByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    expect(container.querySelector(".auth-login-page")).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+  });
+});
+
+describe("robot test route", () => {
+  it("opens directly without authentication", async () => {
+    render(<MemoryRouter initialEntries={["/robot-test"]}><App /></MemoryRouter>);
+
+    expect(await screen.findByText(/Viewport:/)).toBeInTheDocument();
+    expect(screen.getByText(/Canvas:/)).toBeInTheDocument();
+    expect(screen.getByText(/Scene loaded:/)).toHaveTextContent("No");
+    expect(screen.queryByRole("heading", { name: "Welcome back" })).not.toBeInTheDocument();
   });
 });
 

@@ -1,0 +1,34 @@
+html:has(.robot-test-page), body:has(.robot-test-page), #root:has(.robot-test-page) {
+  min-height: 100%;
+  margin: 0;
+  background: #080909;
+}
+
+.robot-test-page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: 1vh 0 8px;
+  background: #080909;
+  color: #aaa;
+  font: 11px/1.4 system-ui, sans-serif;
+}
+
+.robot-test-canvas {
+  position: relative;
+  width: 100vw;
+  height: 85vh;
+  height: 85svh;
+  border: 1px solid #373a3a;
+  box-sizing: border-box;
+}
+
+.robot-test-status { position: absolute; z-index: 1; inset: 0; display: grid; place-content: center; text-align: center; background: #080909; color: #b7baba; }
+.robot-test-debug { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 12px; color: #898d8d; }
+.robot-test-loading-page { min-height: 100vh; background: #080909; }
+
+@media (max-width: 600px) {
+  .robot-test-page { padding-top: 0; display: flex; flex-direction: column; }
+  .robot-test-canvas { width: 100vw; height: calc(100vh - 44px); height: calc(100svh - 44px); }
+  .robot-test-debug { min-height: 28px; justify-content: center; gap: 4px 10px; font-size: 10px; }
+}
