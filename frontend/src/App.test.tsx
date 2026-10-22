@@ -5,6 +5,10 @@ import { MemoryRouter } from "react-router-dom";
 import App from "./App";
 import { Assessment, saveAuth, User } from "./api";
 
+vi.mock("@splinetool/react-spline", () => ({
+  default: ({ scene }: { scene: string }) => <div data-testid="spline-scene" data-scene={scene} />,
+}));
+
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
@@ -30,7 +34,8 @@ describe("authentication workflow", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     const { container } = render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("spline-scene")).toHaveAttribute("data-scene", "https://prod.spline.design/0F4Z9rX1AsFWaYh7/scene.splinecode");
     await user.type(screen.getByLabelText("Work email"), "recruiter@example.test");
     await user.type(screen.getByLabelText("Password"), "password");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
@@ -41,16 +46,34 @@ describe("authentication workflow", () => {
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/auth/login", expect.objectContaining({ method: "POST" }));
   });
 
-  it("keeps the cursor glow on both login and registration while navigating between them", async () => {
+  it("keeps the redesigned auth composition on both login and registration", async () => {
     const user = userEvent.setup();
     const { container } = render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+    expect(container.querySelector(".robot-stage")).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Create an account" }));
     expect(screen.getByRole("heading", { name: "Create your workspace" })).toBeInTheDocument();
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+    expect(container.querySelector(".robot-stage")).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Sign in" }));
     expect(screen.getByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
-    expect(container.querySelector(".auth-cursor-glow")).toBeInTheDocument();
+    expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+  });
+
+  it("skips loading the Spline runtime on small screens while keeping auth controls available", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(max-width: 600px)",
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    const { container } = render(<MemoryRouter initialEntries={["/login"]}><App /></MemoryRouter>);
+
+    expect(container.querySelector(".spline-viewport")).not.toBeInTheDocument();
+    expect(screen.getByText("3D preview available on larger screens")).toBeInTheDocument();
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign in/i })).toBeInTheDocument();
   });
 });
 

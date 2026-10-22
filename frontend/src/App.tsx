@@ -1,4 +1,4 @@
-import { Fragment, type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Component, Fragment, lazy, Suspense, type ErrorInfo, type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { loader } from "@monaco-editor/react";
 import { Archive, ArrowRight, BriefcaseBusiness, Check, CircleAlert, Clock3, Code2, Copy, FilePlus2, LogOut, Plus, ShieldCheck, Users, X } from "lucide-react";
@@ -6,6 +6,16 @@ import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams 
 import { api, Assessment, Attempt, clearAuth, getUser, Report, saveAuth, SubmissionStatus, User } from "./api";
 
 loader.config({ paths: { vs: "/vs" } });
+
+const SPLINE_ROBOT_SCENE = "https://prod.spline.design/0F4Z9rX1AsFWaYh7/scene.splinecode";
+const Spline = lazy(() => import("@splinetool/react-spline"));
+
+class SplineErrorBoundary extends Component<{ children: ReactNode; onError: () => void }, { hasError: boolean }> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(_error: Error, _info: ErrorInfo) { this.props.onError(); }
+  render() { return this.state.hasError ? null : this.props.children; }
+}
 
 function ErrorMessage({ children }: { children: string }) {
   return <div className="error-banner" role="alert"><CircleAlert size={17} />{children}</div>;
@@ -45,60 +55,42 @@ function Shell({ user, children }: { user?: User | null; children: ReactNode }) 
 
 function AuthPage({ mode }: { mode: "login" | "register" }) {
   const navigate = useNavigate();
-  const authGlowRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [organization, setOrganization] = useState("");
+  const [splineLoaded, setSplineLoaded] = useState(false);
+  const [splineFailed, setSplineFailed] = useState(false);
+  const [splineAttempt, setSplineAttempt] = useState(0);
+  const [isSmallScreen, setIsSmallScreen] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.("(max-width: 600px)").matches));
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches));
   useEffect(() => {
-    const page = authGlowRef.current;
-    if (!page || typeof window.matchMedia !== "function") return;
-    if (!window.matchMedia("(pointer: fine)").matches || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-
-    const glow = page.querySelector<HTMLElement>(".auth-cursor-glow");
-    if (!glow) return;
-    let frame = 0;
-    let x = page.clientWidth / 2;
-    let y = page.clientHeight / 2;
-    let opacity = 0;
-    let targetX = x;
-    let targetY = y;
-    let targetOpacity = 0;
-
-    const animate = () => {
-      x += (targetX - x) * .12;
-      y += (targetY - y) * .12;
-      opacity += (targetOpacity - opacity) * .12;
-      glow.style.setProperty("--cursor-glow-x", `${x}px`);
-      glow.style.setProperty("--cursor-glow-y", `${y}px`);
-      glow.style.setProperty("--cursor-glow-opacity", opacity.toFixed(3));
-      if (Math.abs(targetX - x) > .2 || Math.abs(targetY - y) > .2 || Math.abs(targetOpacity - opacity) > .01) {
-        frame = window.requestAnimationFrame(animate);
-      } else {
-        frame = 0;
-      }
-    };
-    const schedule = () => { if (!frame) frame = window.requestAnimationFrame(animate); };
-    const onPointerMove = (event: PointerEvent) => {
-      if (event.pointerType === "touch") return;
-      const bounds = page.getBoundingClientRect();
-      targetX = event.clientX - bounds.left;
-      targetY = event.clientY - bounds.top;
-      targetOpacity = .88;
-      schedule();
-    };
-    const onPointerLeave = () => { targetOpacity = 0; schedule(); };
-
-    page.addEventListener("pointermove", onPointerMove, { passive: true });
-    page.addEventListener("pointerleave", onPointerLeave, { passive: true });
-    return () => {
-      page.removeEventListener("pointermove", onPointerMove);
-      page.removeEventListener("pointerleave", onPointerLeave);
-      if (frame) window.cancelAnimationFrame(frame);
-    };
-  }, [mode]);
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(max-width: 600px)");
+    const update = () => setIsSmallScreen(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => query.removeEventListener?.("change", update);
+  }, []);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setPrefersReducedMotion(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => query.removeEventListener?.("change", update);
+  }, []);
+  const showLightweightRobot = isSmallScreen || prefersReducedMotion;
+  useEffect(() => {
+    if (showLightweightRobot || splineLoaded || splineFailed) return;
+    const timeout = window.setTimeout(() => setSplineFailed(true), 25000);
+    return () => window.clearTimeout(timeout);
+  }, [showLightweightRobot, splineLoaded, splineFailed, splineAttempt]);
+  useEffect(() => { if (showLightweightRobot) setSplineLoaded(false); }, [showLightweightRobot]);
+  const markSplineLoaded = () => { setSplineLoaded(true); setSplineFailed(false); };
+  const failSpline = () => { setSplineFailed(true); setSplineLoaded(false); };
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true); setError("");
@@ -112,16 +104,28 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not authenticate."); }
     finally { setBusy(false); }
   };
-  return <Shell><div className="auth-glow-page" ref={authGlowRef}>
-    <div className="auth-cursor-glow" aria-hidden="true" />
+  return <Shell><div className="auth-page">
     <div className="auth-layout">
     <section className="auth-story">
       <span className="eyebrow"><span className="eyebrow-dot" />Assessment, with evidence</span>
-      <h1>Find the thinking<br />behind the code.</h1>
+      <h1>Find the thinking<br />behind the <span>code.</span></h1>
       <p>Run structured technical assessments with a secure coding workspace and evidence-based evaluation.</p>
       <div className="story-points"><div><span><ShieldCheck size={17} /></span><div><b>Fair by design</b><small>Consistent questions and test coverage.</small></div></div><div><span><Code2 size={17} /></span><div><b>Built for real work</b><small>Candidates solve in a focused Python workspace.</small></div></div></div>
       <div className="auth-decoration"><div className="decor-line">def evaluate(solution):</div><div className="decor-line indent">return evidence, not guesswork</div></div>
     </section>
+    <div className="robot-stage" aria-busy={!showLightweightRobot && !splineLoaded && !splineFailed}>
+      {!showLightweightRobot && !splineFailed && <div className="spline-viewport" key={splineAttempt}>
+        {!splineLoaded && <div className="spline-loading" role="status"><span className="spline-spinner" />Loading 3D scene</div>}
+        <SplineErrorBoundary key={`boundary-${splineAttempt}`} onError={failSpline}>
+          <div className="spline-canvas" role="img" aria-label="Interactive TalentForge robot, animated by Spline"><Suspense fallback={null}><Spline scene={SPLINE_ROBOT_SCENE} onLoad={markSplineLoaded} /></Suspense></div>
+        </SplineErrorBoundary>
+      </div>}
+      {showLightweightRobot && <div className="spline-mobile-fallback" aria-hidden="true"><span /><i /></div>}
+      {!showLightweightRobot && splineFailed && <div className="spline-error" role="status"><span>The 3D preview is unavailable.</span><button type="button" onClick={() => { setSplineFailed(false); setSplineLoaded(false); setSplineAttempt(value => value + 1); }}>Try again</button></div>}
+      {showLightweightRobot && <span className="spline-mobile-note">{prefersReducedMotion ? "3D preview paused to honor your motion settings" : "3D preview available on larger screens"}</span>}
+      <span className="robot-caption"><span /> A little help, backed by evidence</span>
+      <span className="spline-credit">3D by <a href="https://spline.design" target="_blank" rel="noreferrer">Spline</a> · <a href="https://community.spline.design/file/8cfb6748-f3dd-44dd-89fb-f46c7ab4186e" target="_blank" rel="noreferrer">Original scene</a></span>
+    </div>
     <section className="auth-card">
       <div className="card-mark"><BriefcaseBusiness size={20} /></div>
       <h2>{mode === "login" ? "Welcome back" : "Create your workspace"}</h2>
