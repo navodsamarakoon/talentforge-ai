@@ -3,7 +3,7 @@ import Editor from "@monaco-editor/react";
 import { loader } from "@monaco-editor/react";
 import { Archive, ArrowRight, BriefcaseBusiness, Check, CircleAlert, Clock3, Code2, Copy, FilePlus2, LogOut, Plus, ShieldCheck, Users, X } from "lucide-react";
 import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, Assessment, Attempt, clearAuth, getUser, Report, saveAuth, SubmissionStatus, User } from "./api";
+import { api, Assessment, Attempt, clearAuth, getUser, JobApplication, JobOpening, Report, saveAuth, SubmissionStatus, User } from "./api";
 
 const RobotTestPage = lazy(() => import("./RobotTestPage"));
 const SplineRobot = lazy(() => import("./SplineRobot"));
@@ -54,14 +54,23 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [organization, setOrganization] = useState("");
+  const [accountType, setAccountType] = useState<User["role"]>("recruiter");
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const response = await api<{ access_token: string; user: User }>(mode === "login" ? "/auth/login" : "/auth/register", {
+      const registeringCandidate = mode === "register" && accountType === "candidate";
+      const response = await api<{ access_token: string; user: User }>(
+        mode === "login" ? "/auth/login" : registeringCandidate ? "/auth/register/candidate" : "/auth/register",
+        {
         method: "POST",
-        body: JSON.stringify(mode === "login" ? { email, password } : { email, password, full_name: name, organization_name: organization }),
-      });
+        body: JSON.stringify(mode === "login"
+          ? { email, password }
+          : registeringCandidate
+            ? { email, password, full_name: name }
+            : { email, password, full_name: name, organization_name: organization }),
+        },
+      );
       saveAuth(response.access_token, response.user);
       navigate(response.user.role === "recruiter" ? "/recruiter" : "/candidate");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not authenticate."); }
@@ -80,14 +89,18 @@ function AuthPage({ mode }: { mode: "login" | "register" }) {
     </div>
     <section className="auth-card">
       <div className="card-mark"><BriefcaseBusiness size={20} /></div>
-      <h2>{mode === "login" ? "Welcome back" : "Create your workspace"}</h2>
-      <p className="muted">{mode === "login" ? "Sign in to continue to TalentForge." : "Start assessing candidates with your team."}</p>
+      <h2>{mode === "login" ? "Welcome back" : accountType === "recruiter" ? "Create your workspace" : "Create your account"}</h2>
+      <p className="muted">{mode === "login" ? "Sign in to continue to TalentForge." : accountType === "recruiter" ? "Start assessing candidates with your team." : "Create a candidate account to access your assessments."}</p>
       {error && <ErrorMessage>{error}</ErrorMessage>}
       <form onSubmit={submit} className="form-stack">
-        {mode === "register" && <><label>Full name<input required maxLength={160} value={name} onChange={e => setName(e.target.value)} placeholder="Your name" /></label><label>Organization<input required maxLength={160} value={organization} onChange={e => setOrganization(e.target.value)} placeholder="Organization name" /></label></>}
-        <label>Work email<input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" /></label>
+        {mode === "register" && <>
+          <label>Account type<select value={accountType} onChange={e => setAccountType(e.target.value === "candidate" ? "candidate" : "recruiter")}><option value="recruiter">Recruiter</option><option value="candidate">Candidate</option></select></label>
+          <label>Full name<input required maxLength={160} value={name} onChange={e => setName(e.target.value)} placeholder="Your name" /></label>
+          {accountType === "recruiter" && <label>Organization<input required maxLength={160} value={organization} onChange={e => setOrganization(e.target.value)} placeholder="Organization name" /></label>}
+        </>}
+        <label>{mode === "register" ? "Email" : "Work email"}<input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" /></label>
         <label>Password<input type="password" required minLength={mode === "register" ? 12 : 1} value={password} onChange={e => setPassword(e.target.value)} placeholder={mode === "register" ? "At least 12 characters" : "Your password"} /></label>
-        <button className="button primary full" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create recruiter account"}<ArrowRight size={16} /></button>
+        <button className="button primary full" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Sign in" : `Create ${accountType} account`}<ArrowRight size={16} /></button>
       </form>
       <p className="auth-switch">{mode === "login" ? "New to TalentForge?" : "Already have an account?"} <Link to={mode === "login" ? "/register" : "/login"}>{mode === "login" ? "Create an account" : "Sign in"}</Link></p>
     </section>
@@ -131,6 +144,17 @@ function RecruiterHome() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
   const loadSequence = useRef(0);
+  const [jobOpenings, setJobOpenings] = useState<JobOpening[]>([]);
+  const [jobOpeningsLoading, setJobOpeningsLoading] = useState(true);
+  const [jobOpeningsError, setJobOpeningsError] = useState("");
+  const [jobOpeningsNotice, setJobOpeningsNotice] = useState("");
+  const [showJobForm, setShowJobForm] = useState(false);
+  const [jobTitle, setJobTitle] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [jobEmploymentType, setJobEmploymentType] = useState<JobOpening["employment_type"]>("full-time");
+  const [jobLocation, setJobLocation] = useState("");
+  const [savingJob, setSavingJob] = useState(false);
+  const [pendingJobAction, setPendingJobAction] = useState<{ id: string; action: "publish" | "close" } | null>(null);
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
     setError(""); setAssessments([]); setLoading(true);
@@ -144,6 +168,57 @@ function RecruiterHome() {
     }
   }, [showArchived]);
   useEffect(() => { void load(); }, [load]);
+  const loadJobOpenings = useCallback(async (showLoading = true) => {
+    if (showLoading) setJobOpeningsLoading(true);
+    setJobOpeningsError("");
+    try {
+      setJobOpenings(await api<JobOpening[]>("/jobs"));
+    } catch (caught) {
+      setJobOpeningsError(caught instanceof Error ? caught.message : "Unable to load job vacancies.");
+    } finally {
+      setJobOpeningsLoading(false);
+    }
+  }, []);
+  useEffect(() => { void loadJobOpenings(); }, [loadJobOpenings]);
+  const createJobOpening = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!jobTitle.trim() || !jobDescription.trim() || !jobLocation.trim()) {
+      setJobOpeningsError("Enter a job title, description, and location.");
+      return;
+    }
+    setSavingJob(true); setJobOpeningsError(""); setJobOpeningsNotice("");
+    try {
+      const created = await api<JobOpening>("/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          title: jobTitle.trim(),
+          description: jobDescription.trim(),
+          employment_type: jobEmploymentType,
+          location: jobLocation.trim(),
+        }),
+      });
+      setShowJobForm(false);
+      setJobTitle(""); setJobDescription(""); setJobLocation(""); setJobEmploymentType("full-time");
+      await loadJobOpenings(false);
+      setJobOpeningsNotice(`Job vacancy "${created.title}" was created as a draft.`);
+    } catch (caught) {
+      setJobOpeningsError(caught instanceof Error ? caught.message : "Could not create job vacancy.");
+    } finally {
+      setSavingJob(false);
+    }
+  };
+  const updateJobStatus = async (job: JobOpening, action: "publish" | "close") => {
+    setPendingJobAction({ id: job.id, action }); setJobOpeningsError(""); setJobOpeningsNotice("");
+    try {
+      await api<JobOpening>(`/jobs/${job.id}/${action}`, { method: "POST" });
+      await loadJobOpenings(false);
+      setJobOpeningsNotice(`Job vacancy "${job.title}" was ${action === "publish" ? "published" : "closed"}.`);
+    } catch (caught) {
+      setJobOpeningsError(caught instanceof Error ? caught.message : `Could not ${action} job vacancy.`);
+    } finally {
+      setPendingJobAction(null);
+    }
+  };
   const create = async (event: FormEvent) => {
     event.preventDefault();
     if (!title.trim()) { setError("Enter an assessment title."); return; }
@@ -198,6 +273,32 @@ function RecruiterHome() {
     {error && <ErrorMessage>{error}</ErrorMessage>}{notice && <div className="success-banner" role="status">{notice}</div>}
     {!showArchived && <div className="stats-grid"><div className="stat-card"><div className="stat-icon blue"><FilePlus2 size={18} /></div><span>Active assessments</span><b>{assessments.length}</b><small>Across your organization</small></div><div className="stat-card"><div className="stat-icon green"><Check size={18} /></div><span>Published</span><b>{published}</b><small>Ready for candidates</small></div><div className="stat-card"><div className="stat-icon violet"><Users size={18} /></div><span>Assessment format</span><b>Python</b><small>Software engineering roles</small></div></div>}
     {!showArchived && showCreate && <section className="panel create-panel"><div className="section-title"><div><span className="eyebrow">New assessment</span><h2>Set up the basics</h2></div><button className="icon-button" aria-label="Close" onClick={() => setShowCreate(false)}><X size={18} /></button></div><form className="form-grid" onSubmit={create}><label>Assessment title<input required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Backend Engineering — Algorithms" /></label><label>Role<select value={role} onChange={e => setRole(e.target.value)}><option>Software Engineer</option><option>Software Engineering Intern</option></select></label><label>Time limit (minutes)<input required type="number" min={5} max={480} value={limit} onChange={e => setLimit(Number(e.target.value))} /></label><label className="span-two">Candidate instructions<textarea maxLength={20000} value={instructions} onChange={e => setInstructions(e.target.value)} placeholder="Provide context and rules for the assessment." /></label><div className="span-two form-actions"><button type="button" className="button secondary" onClick={() => setShowCreate(false)}>Cancel</button><button className="button primary" disabled={saving}>{saving ? "Creating…" : "Create draft"}<ArrowRight size={15} /></button></div></form></section>}
+    <section className="panel job-vacancies-panel" aria-labelledby="job-vacancies-heading">
+      <div className="section-title">
+        <div><span className="eyebrow">Hiring</span><h2 id="job-vacancies-heading">Job Vacancies <span className="count">{jobOpenings.length}</span></h2></div>
+        <button className="button primary" onClick={() => { setShowJobForm(value => !value); setJobOpeningsError(""); }}><Plus size={16} />Create Job Vacancy</button>
+      </div>
+      {jobOpeningsError && <ErrorMessage>{jobOpeningsError}</ErrorMessage>}
+      {jobOpeningsNotice && <div className="success-banner" role="status">{jobOpeningsNotice}</div>}
+      {showJobForm && <form className="form-grid job-vacancy-form" onSubmit={createJobOpening} noValidate>
+        <label>Job Title<input required maxLength={200} value={jobTitle} onChange={event => setJobTitle(event.target.value)} placeholder="e.g. Software Engineer" /></label>
+        <label>Employment Type<select value={jobEmploymentType} onChange={event => setJobEmploymentType(event.target.value as JobOpening["employment_type"])}><option value="internship">Internship</option><option value="full-time">Full-time</option><option value="part-time">Part-time</option></select></label>
+        <label>Location<input required maxLength={200} value={jobLocation} onChange={event => setJobLocation(event.target.value)} placeholder="e.g. Remote" /></label>
+        <label className="span-two">Job Description<textarea required maxLength={20000} rows={5} value={jobDescription} onChange={event => setJobDescription(event.target.value)} placeholder="Describe the role and responsibilities." /></label>
+        <div className="span-two form-actions"><button type="button" className="button secondary" onClick={() => setShowJobForm(false)}>Cancel</button><button className="button primary" disabled={savingJob}>{savingJob ? "Creating…" : "Create Job Vacancy"}<ArrowRight size={15} /></button></div>
+      </form>}
+      {jobOpeningsLoading ? <Busy label="Loading job vacancies…" /> : jobOpeningsError && jobOpenings.length === 0
+        ? <div className="empty-state"><h3>Job vacancies could not be loaded.</h3><button className="button secondary" onClick={() => void loadJobOpenings()}>Try again</button></div>
+        : jobOpenings.length === 0
+          ? <div className="empty-state job-vacancies-empty"><h3>No job vacancies yet.</h3><p>Create a vacancy to start hiring for your organization.</p></div>
+          : <div className="job-vacancy-list">{jobOpenings.map(job => <article className="job-vacancy-card" key={job.id}>
+            <div className="job-vacancy-main"><div className="title-line"><h3>{job.title}</h3><span className={`status ${job.status}`}><i />{job.status}</span></div>
+              <p>{job.employment_type === "full-time" ? "Full-time" : job.employment_type === "part-time" ? "Part-time" : "Internship"}<span className="dot-sep">·</span>{job.location}<span className="dot-sep">·</span>Created {new Date(job.created_at).toLocaleDateString()}</p>
+              <p className="job-vacancy-description">{job.description}</p>
+            </div>
+            <div className="assessment-actions">{job.status === "draft" && <button className="button secondary" disabled={pendingJobAction !== null} onClick={() => void updateJobStatus(job, "publish")}>{pendingJobAction?.id === job.id && pendingJobAction.action === "publish" ? "Publishing…" : "Publish Job"}</button>}{job.status === "published" && <button className="button secondary danger-button" disabled={pendingJobAction !== null} onClick={() => void updateJobStatus(job, "close")}>{pendingJobAction?.id === job.id && pendingJobAction.action === "close" ? "Closing…" : "Close Job"}</button>}</div>
+          </article>)}</div>}
+    </section>
     <div className="section-title list-header"><div><span className="eyebrow">Your organization</span><h2>{showArchived ? "Archived assessments" : "Active assessments"} <span className="count">{assessments.length}</span></h2></div><div className="assessment-view-switch" role="group" aria-label="Assessment workspace view"><button type="button" className={`button ${showArchived ? "secondary" : "primary"}`} aria-pressed={!showArchived} onClick={() => { setShowArchived(false); setLoading(true); }}>Active</button><button type="button" className={`button ${showArchived ? "primary" : "secondary"}`} aria-pressed={showArchived} onClick={() => { setShowArchived(true); setLoading(true); }}><Archive size={15} />Archived</button></div></div>
     {loading ? <Busy /> : error && assessments.length === 0 ? <div className="empty-state"><h3>Assessments could not be loaded.</h3><button className="button secondary" onClick={() => void load()}>Try again</button></div> : showAssessmentEmpty ? <div className="empty-state">{showArchived ? <><h3>No archived assessments.</h3><p>Assessments you archive will appear here. Their invitations and candidate history remain preserved.</p></> : <><div className="empty-icon"><Code2 /></div><h3>Your first assessment is one step away.</h3><p>Create a draft, add Python questions and hidden test cases, then publish it.</p><button className="button primary" onClick={() => setShowCreate(true)}><Plus size={16} />Create an assessment</button></>}</div> : <><div className="assessment-filters"><label>Search assessments<input aria-label="Search assessments" type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search title, role, or instructions" /></label><label>Status<select aria-label="Filter by status" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="published">Published</option></select></label></div>{filteredAssessments.length === 0 ? <div className="empty-state"><h3>No matching assessments.</h3><p>Try a different search or status filter.</p></div> : <div className="assessment-list">{filteredAssessments.map(item => <article className="assessment-card" key={item.id}><Link to={`/assessments/${item.id}`} className="assessment-card-link"><div className="assessment-symbol"><Code2 size={19} /></div><div className="assessment-main"><div className="title-line"><h3>{item.title}</h3><span className={`status ${item.is_archived ? "archived" : item.is_published ? "published" : "draft"}`}><i />{item.is_archived ? "Archived" : item.is_published ? "Published" : "Draft"}</span></div><p>{item.role} <span className="dot-sep">·</span> {item.questions.length} {item.questions.length === 1 ? "question" : "questions"} <span className="dot-sep">·</span> {item.time_limit_minutes} min <span className="dot-sep">·</span> Created {new Date(item.created_at).toLocaleDateString()}</p><p className="assessment-description">{item.instructions || "No candidate instructions provided."}</p></div></Link><div className="assessment-actions">{item.is_archived && <button className="button secondary" disabled={pendingAction !== null} onClick={() => void unarchiveAssessment(item)}>{pendingAction?.id === item.id && pendingAction.action === "unarchive" ? "Restoring…" : "Restore"}</button>}{item.has_candidate_records ? !item.is_archived && <button className="button secondary" disabled={pendingAction !== null} onClick={() => void archiveAssessment(item)}>{pendingAction?.id === item.id && pendingAction.action === "archive" ? "Archiving…" : "Archive"}</button> : <button className="button secondary danger-button" disabled={pendingAction !== null} onClick={() => void deleteAssessment(item)}>{pendingAction?.id === item.id && pendingAction.action === "delete" ? "Deleting…" : "Delete"}</button>}</div></article>)}</div>}</>}
   </Shell>;
@@ -369,6 +470,18 @@ function CandidateHome() {
   const [attempts, setAttempts] = useState<{ id: string; assessment_id: string; deadline_at: string; completed_at: string | null }[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [jobOpenings, setJobOpenings] = useState<JobOpening[]>([]);
+  const [jobOpeningsError, setJobOpeningsError] = useState("");
+  const [jobOpeningsLoading, setJobOpeningsLoading] = useState(true);
+  const [applications, setApplications] = useState<JobApplication[]>([]);
+  const [applicationsError, setApplicationsError] = useState("");
+  const [applicationsLoading, setApplicationsLoading] = useState(true);
+  const [appliedJobIds, setAppliedJobIds] = useState<Set<string>>(() => new Set());
+  const [applicationJob, setApplicationJob] = useState<JobOpening | null>(null);
+  const [cvFile, setCvFile] = useState<File | null>(null);
+  const [applicationError, setApplicationError] = useState("");
+  const [applicationNotice, setApplicationNotice] = useState("");
+  const [applicationSubmitting, setApplicationSubmitting] = useState(false);
   const navigate = useNavigate();
   useEffect(() => {
     void Promise.all([
@@ -379,6 +492,88 @@ function CandidateHome() {
       setAttempts(candidateAttempts);
     }).catch(caught => setError(caught instanceof Error ? caught.message : "Could not load assignments.")).finally(() => setLoading(false));
   }, []);
+  const loadApplications = useCallback(async () => {
+    setApplicationsLoading(true);
+    setApplicationsError("");
+    try {
+      const history = await api<JobApplication[]>("/candidate/applications");
+      setApplications(history);
+      setAppliedJobIds(current => new Set([
+        ...current,
+        ...history.map(application => application.job_opening_id),
+      ]));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "";
+      setApplicationsError(message.includes("(401)")
+        ? "Your session has expired. Please sign in again."
+        : "Could not load your job applications. Please try again.");
+    } finally {
+      setApplicationsLoading(false);
+    }
+  }, []);
+  const loadJobOpenings = useCallback(async () => {
+    setJobOpeningsLoading(true);
+    setJobOpeningsError("");
+    try {
+      const vacancies = await api<JobOpening[]>("/candidate/jobs");
+      setJobOpenings(vacancies.filter(job => job.status === "published"));
+    } catch (caught) {
+      setJobOpeningsError(caught instanceof Error ? caught.message : "Could not load job vacancies.");
+    } finally {
+      setJobOpeningsLoading(false);
+    }
+  }, []);
+  useEffect(() => { void loadJobOpenings(); }, [loadJobOpenings]);
+  useEffect(() => { void loadApplications(); }, [loadApplications]);
+  const chooseCv = (file: File | undefined) => {
+    setApplicationError("");
+    setCvFile(null);
+    if (!file) return;
+    if (!/\.(pdf|docx)$/i.test(file.name)) {
+      setApplicationError("Choose a PDF or DOCX file.");
+      return;
+    }
+    if (file.size === 0) {
+      setApplicationError("The selected CV is empty. Choose a non-empty PDF or DOCX file.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setApplicationError("The selected CV must be 10 MB or smaller.");
+      return;
+    }
+    setCvFile(file);
+  };
+  const submitApplication = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!applicationJob || !cvFile || applicationSubmitting) return;
+    setApplicationSubmitting(true);
+    setApplicationError("");
+    setApplicationNotice("");
+    const formData = new FormData();
+    formData.append("cv", cvFile);
+    try {
+      await api<JobApplication>(`/candidate/jobs/${applicationJob.id}/applications`, {
+        method: "POST",
+        body: formData,
+      });
+      setAppliedJobIds(current => new Set(current).add(applicationJob.id));
+      setApplicationNotice(`Application submitted for ${applicationJob.title}.`);
+      setApplicationJob(null);
+      setCvFile(null);
+      await loadApplications();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "";
+      if (message.includes("(401)")) setApplicationError("Your session has expired. Please sign in again.");
+      else if (message.includes("(409)")) setApplicationError("You have already applied for this job, or it is no longer accepting applications.");
+      else if (message.includes("(404)")) setApplicationError("This job is no longer available.");
+      else if (message.includes("(413)")) setApplicationError("The selected CV must be 10 MB or smaller.");
+      else if (message.includes("(415)")) setApplicationError("Only PDF and DOCX CV files are accepted.");
+      else if (message.includes("(400)")) setApplicationError("The CV could not be validated. Check that it is a valid, non-empty PDF or DOCX file.");
+      else setApplicationError("We could not submit your application. Check your connection and try again.");
+    } finally {
+      setApplicationSubmitting(false);
+    }
+  };
   const start = async (assessment: Assessment) => {
     try { const attempt = await api<Attempt>(`/candidate/assessments/${assessment.id}/attempts`, { method: "POST" }); navigate(`/attempts/${attempt.id}`); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Could not start assessment."); }
@@ -396,6 +591,49 @@ function CandidateHome() {
             : <button className="button secondary full" disabled>{expired ? "Attempt expired" : "Assessment completed"}</button>}
       </article>;
     })}</div>}
+    <section className="candidate-jobs-section" aria-labelledby="available-jobs-heading">
+      <div className="section-title candidate-jobs-heading"><div><span className="eyebrow">Explore opportunities</span><h2 id="available-jobs-heading">Available Job Vacancies <span className="count">{jobOpenings.length}</span></h2></div></div>
+      {jobOpeningsError && <ErrorMessage>{jobOpeningsError}</ErrorMessage>}
+      {jobOpeningsLoading
+        ? <Busy label="Loading job vacancies…" />
+        : jobOpeningsError && jobOpenings.length === 0
+          ? <div className="empty-state"><h3>Job vacancies could not be loaded.</h3><button className="button secondary" onClick={() => void loadJobOpenings()}>Try again</button></div>
+          : jobOpenings.length === 0
+            ? <div className="empty-state"><h3>No open job vacancies yet.</h3><p>Published job vacancies will appear here when organizations are hiring.</p></div>
+            : <div className="candidate-job-list">{jobOpenings.map(job => <article className="candidate-job-card" key={job.id}>
+              <div className="candidate-job-title"><h3>{job.title}</h3><span className="status published"><i />Open</span></div>
+              <p className="candidate-job-meta">{job.employment_type === "full-time" ? "Full-time" : job.employment_type === "part-time" ? "Part-time" : "Internship"}<span className="dot-sep">·</span>{job.location}</p>
+              <p className="candidate-job-description">{job.description}</p>
+              <div className="candidate-job-actions"><button type="button" className="button primary" disabled={appliedJobIds.has(job.id)} onClick={() => { setApplicationJob(job); setCvFile(null); setApplicationError(""); }}>{appliedJobIds.has(job.id) ? "Applied" : "Apply Now"}</button></div>
+            </article>)}</div>}
+    </section>
+    <section className="candidate-applications-section" aria-labelledby="candidate-applications-heading">
+      <div className="section-title candidate-jobs-heading"><div><span className="eyebrow">Your submissions</span><h2 id="candidate-applications-heading">My Job Applications</h2></div></div>
+      {applicationNotice && <div className="success-banner" role="status">{applicationNotice}</div>}
+      {applicationsLoading
+        ? <Busy label="Loading your job applications…" />
+        : applicationsError
+          ? <div><ErrorMessage>{applicationsError}</ErrorMessage><button className="button secondary" type="button" onClick={() => void loadApplications()}>Try again</button></div>
+          : applications.length === 0
+            ? <div className="empty-state"><h3>No job applications yet.</h3><p>When you apply for a vacancy, it will appear here.</p></div>
+            : <div className="candidate-application-list">{applications.map(application => <article className="candidate-application-card" key={application.id}>
+              <div><h3>{application.job_title ?? "Job vacancy"}</h3><p>CV: {application.original_cv_filename}</p><p>Submitted {new Date(application.submitted_at).toLocaleDateString()}</p></div>
+              <span className={`status ${application.status === "rejected" ? "closed" : application.status === "selected" ? "published" : "draft"}`}><i />{application.status.charAt(0).toUpperCase() + application.status.slice(1)}</span>
+            </article>)}</div>}
+    </section>
+    {applicationJob && <div className="application-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !applicationSubmitting) setApplicationJob(null); }}>
+      <section className="application-modal" role="dialog" aria-modal="true" aria-labelledby="application-form-heading">
+        <div className="application-modal-heading"><div><span className="eyebrow">Job application</span><h2 id="application-form-heading">{applicationJob.title}</h2></div><button className="icon-button" type="button" aria-label="Close application form" disabled={applicationSubmitting} onClick={() => setApplicationJob(null)}><X size={18} /></button></div>
+        <form onSubmit={submitApplication}>
+          <label htmlFor="candidate-cv">CV file</label>
+          <input id="candidate-cv" type="file" accept=".pdf,.docx" aria-describedby="candidate-cv-help" disabled={applicationSubmitting} onChange={event => chooseCv(event.currentTarget.files?.[0])} />
+          <p id="candidate-cv-help" className="field-help">PDF or DOCX only. Maximum file size: 10 MB.</p>
+          {cvFile && <p className="selected-cv" role="status">Selected: {cvFile.name}</p>}
+          {applicationError && <ErrorMessage>{applicationError}</ErrorMessage>}
+          <div className="application-modal-actions"><button className="button secondary" type="button" disabled={applicationSubmitting} onClick={() => setApplicationJob(null)}>Cancel</button><button className="button primary" type="submit" disabled={!cvFile || applicationSubmitting}>{applicationSubmitting ? "Submitting…" : "Submit Application"}</button></div>
+        </form>
+      </section>
+    </div>}
   </Shell>;
 }
 

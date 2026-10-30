@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import App from "./App";
-import { Assessment, saveAuth, User } from "./api";
+import { Assessment, JobOpening, saveAuth, User } from "./api";
 
 vi.mock("@splinetool/react-spline", () => ({ default: () => null }));
 
@@ -53,14 +53,90 @@ describe("authentication workflow", () => {
     expect(container.querySelector(".auth-login-page")).not.toBeInTheDocument();
     expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
     expect(container.querySelector(".auth-robot-stage")).toBeInTheDocument();
+    expect(screen.getByLabelText("Account type")).toHaveValue("recruiter");
     expect(screen.getByLabelText("Full name")).toBeInTheDocument();
     expect(screen.getByLabelText("Organization")).toBeInTheDocument();
-    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Account type"), "candidate");
+    expect(screen.queryByLabelText("Organization")).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Account type"), "recruiter");
+    expect(screen.getByLabelText("Organization")).toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Sign in" }));
     expect(screen.getByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
     expect(container.querySelector(".auth-login-page")).toBeInTheDocument();
     expect(container.querySelector(".auth-cursor-glow")).not.toBeInTheDocument();
+  });
+
+  it("registers candidates without organization data and routes using the returned role", async () => {
+    const candidate = {
+      id: "candidate-1",
+      email: "candidate@example.com",
+      full_name: "Candidate",
+      role: "candidate",
+      organization_id: null,
+    };
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/auth/register/candidate")) {
+        return jsonResponse({ access_token: "candidate-token", user: candidate }, 201);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/register"]}><App /></MemoryRouter>);
+    await user.selectOptions(screen.getByLabelText("Account type"), "candidate");
+    await user.type(screen.getByLabelText("Full name"), "Candidate");
+    await user.type(screen.getByLabelText("Email"), "candidate@example.com");
+    await user.type(screen.getByLabelText("Password"), "a-strong-candidate-password");
+    await user.click(screen.getByRole("button", { name: /create candidate account/i }));
+
+    expect(await screen.findByText("Your next opportunity starts here.")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/auth/register/candidate", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        email: "candidate@example.com",
+        password: "a-strong-candidate-password",
+        full_name: "Candidate",
+      }),
+    }));
+    expect(window.localStorage.getItem("talentforge-token")).toBe("candidate-token");
+  });
+
+  it("keeps recruiter registration on the existing endpoint and includes the organization", async () => {
+    const recruiter = {
+      id: "recruiter-1",
+      email: "recruiter@example.com",
+      full_name: "Recruiter",
+      role: "recruiter",
+      organization_id: "organization-1",
+    };
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/auth/register")) {
+        return jsonResponse({ access_token: "recruiter-token", user: recruiter }, 201);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/register"]}><App /></MemoryRouter>);
+    await user.type(screen.getByLabelText("Full name"), "Recruiter");
+    await user.type(screen.getByLabelText("Organization"), "Acme");
+    await user.type(screen.getByLabelText("Email"), "recruiter@example.com");
+    await user.type(screen.getByLabelText("Password"), "a-strong-recruiter-password");
+    await user.click(screen.getByRole("button", { name: /create recruiter account/i }));
+
+    expect(await screen.findByText("Your first assessment is one step away.")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/auth/register", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        email: "recruiter@example.com",
+        password: "a-strong-recruiter-password",
+        full_name: "Recruiter",
+        organization_name: "Acme",
+      }),
+    }));
+    expect(window.localStorage.getItem("talentforge-token")).toBe("recruiter-token");
   });
 });
 
@@ -101,6 +177,20 @@ function assessment(overrides: Partial<Assessment> = {}): Assessment {
   };
 }
 
+function jobOpening(overrides: Partial<JobOpening> = {}): JobOpening {
+  return {
+    id: "job-1",
+    organization_id: "org-1",
+    title: "Software Engineer",
+    description: "Build and maintain product features.",
+    employment_type: "full-time",
+    location: "Remote",
+    status: "draft",
+    created_at: "2026-10-30T12:00:00Z",
+    ...overrides,
+  };
+}
+
 function renderRecruiter(path = "/recruiter") {
   saveAuth("signed-token", recruiter);
   return render(<MemoryRouter initialEntries={[path]}><App /></MemoryRouter>);
@@ -112,10 +202,13 @@ function jsonResponse(body: unknown, status = 200) {
 
 describe("recruiter assessment CRUD", () => {
   it("shows loading, empty, and recoverable API-error states", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({ detail: "Service unavailable." }) })
-      .mockResolvedValueOnce(jsonResponse([]));
+    let assessmentLoads = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/jobs")) return jsonResponse([]);
+      assessmentLoads += 1;
+      if (assessmentLoads === 2) return jsonResponse({ detail: "Service unavailable." }, 503);
+      return jsonResponse([]);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
@@ -143,7 +236,7 @@ describe("recruiter assessment CRUD", () => {
     await user.type(screen.getByLabelText("Assessment title"), "   ");
     await user.click(screen.getByRole("button", { name: /create draft/i }));
     expect(await screen.findByText("Enter an assessment title.")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter(([url, options]) => url.endsWith("/assessments") && options?.method === "POST")).toHaveLength(0);
 
     const title = screen.getByLabelText("Assessment title");
     await user.clear(title);
@@ -164,10 +257,13 @@ describe("recruiter assessment CRUD", () => {
   });
 
   it("searches and filters fetched assessments", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse([
-      assessment(),
-      assessment({ id: "published-1", title: "Published algorithms", is_published: true }),
-    ])));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/jobs")) return jsonResponse([]);
+      return jsonResponse([
+        assessment(),
+        assessment({ id: "published-1", title: "Published algorithms", is_published: true }),
+      ]);
+    }));
     const user = userEvent.setup();
     const { container } = renderRecruiter();
     expect(await screen.findByText("Python fundamentals")).toBeInTheDocument();
@@ -215,10 +311,12 @@ describe("recruiter assessment CRUD", () => {
   });
 
   it("keeps an assessment visible and reports server errors when archiving fails", async () => {
-    const fetchMock = vi.fn().mockImplementation(async (_url: string, options?: RequestInit) =>
-      options?.method === "POST"
-        ? jsonResponse({ detail: "Assessment is already archived." }, 409)
-        : jsonResponse([assessment({ has_candidate_records: true })]));
+    const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) =>
+      url.endsWith("/jobs")
+        ? jsonResponse([])
+        : options?.method === "POST"
+          ? jsonResponse({ detail: "Assessment is already archived." }, 409)
+          : jsonResponse([assessment({ has_candidate_records: true })]));
     vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
@@ -232,6 +330,7 @@ describe("recruiter assessment CRUD", () => {
   it("keeps assessment details navigable from the card without Edit or chevron actions", async () => {
     let saved = assessment();
     const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/jobs")) return jsonResponse([]);
       if (url.endsWith("/assessments") && !options?.method) return jsonResponse([saved]);
       if (url.endsWith("/compare")) return jsonResponse([]);
       if (options?.method === "PATCH") {
@@ -439,10 +538,12 @@ describe("recruiter assessment CRUD", () => {
 
   it("confirms deletion, removes only on success, and preserves the row on failure", async () => {
     let failDelete = true;
-    const fetchMock = vi.fn().mockImplementation(async (_url: string, options?: RequestInit) =>
-      options?.method === "DELETE"
-        ? failDelete ? jsonResponse({ detail: "Assessment has candidate records." }, 409) : { ok: true, status: 204 }
-        : jsonResponse([assessment()]));
+    const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) =>
+      url.endsWith("/jobs")
+        ? jsonResponse([])
+        : options?.method === "DELETE"
+          ? failDelete ? jsonResponse({ detail: "Assessment has candidate records." }, 409) : { ok: true, status: 204 }
+          : jsonResponse([assessment()]));
     vi.stubGlobal("fetch", fetchMock);
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
@@ -457,6 +558,110 @@ describe("recruiter assessment CRUD", () => {
     await user.click(screen.getByRole("button", { name: "Delete" }));
     expect(await screen.findByRole("status")).toHaveTextContent('Assessment "Python fundamentals" was deleted.');
     expect(screen.queryByText("Python fundamentals")).not.toBeInTheDocument();
+  });
+});
+
+describe("recruiter job vacancy management", () => {
+  it("displays real job vacancies and creates new openings as drafts", async () => {
+    let vacancies = [jobOpening({ title: "Existing Engineer", status: "published" })];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/jobs") && options?.method === "POST") {
+        const body = JSON.parse(String(options.body)) as Omit<JobOpening, "id" | "organization_id" | "status" | "created_at">;
+        const created = jobOpening({ ...body, id: "job-new", status: "draft", created_at: "2026-10-31T12:00:00Z" });
+        vacancies = [created, ...vacancies];
+        return jsonResponse(created, 201);
+      }
+      if (url.endsWith("/jobs")) return jsonResponse(vacancies);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderRecruiter();
+
+    expect(await screen.findByText("Existing Engineer")).toBeInTheDocument();
+    expect(screen.getByText(/Full-time/)).toBeInTheDocument();
+    expect(screen.getByText(/Remote.*Created/)).toBeInTheDocument();
+    expect(screen.getByText("published", { selector: ".status" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /create job vacancy/i }));
+    await user.type(screen.getByLabelText("Job Title"), "Software Engineering Intern");
+    await user.selectOptions(screen.getByLabelText("Employment Type"), "internship");
+    await user.type(screen.getByLabelText("Location"), "Colombo");
+    await user.type(screen.getByLabelText("Job Description"), "Work with the engineering team.");
+    await user.click(screen.getAllByRole("button", { name: /create job vacancy/i })[1]);
+
+    expect(await screen.findByText("Software Engineering Intern")).toBeInTheDocument();
+    expect(screen.getByText("draft", { selector: ".status" })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent('Job vacancy "Software Engineering Intern" was created as a draft.');
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/jobs", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        title: "Software Engineering Intern",
+        description: "Work with the engineering team.",
+        employment_type: "internship",
+        location: "Colombo",
+      }),
+    }));
+  });
+
+  it("publishes draft vacancies and closes published vacancies, refreshing the list", async () => {
+    let vacancy = jobOpening();
+    const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/jobs") && !options?.method) return jsonResponse([vacancy]);
+      if (url.endsWith("/publish")) {
+        vacancy = jobOpening({ ...vacancy, status: "published" });
+        return jsonResponse(vacancy);
+      }
+      if (url.endsWith("/close")) {
+        vacancy = jobOpening({ ...vacancy, status: "closed" });
+        return jsonResponse(vacancy);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderRecruiter();
+
+    expect(await screen.findByText("Software Engineer")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Publish Job" }));
+    expect(await screen.findByRole("button", { name: "Close Job" })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent('Job vacancy "Software Engineer" was published.');
+    expect(screen.getByText("published", { selector: ".status" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close Job" }));
+    expect(await screen.findByText("closed", { selector: ".status" })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent('Job vacancy "Software Engineer" was closed.');
+    expect(screen.queryByRole("button", { name: "Publish Job" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close Job" })).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/jobs/job-1/publish", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/jobs/job-1/close", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock.mock.calls.filter(([url, options]) => url.endsWith("/jobs") && !options?.method)).toHaveLength(3);
+  });
+
+  it("shows vacancies API errors and validates creation input", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url.endsWith("/jobs") && options?.method === "POST") {
+        return jsonResponse({ detail: "Job description is invalid." }, 422);
+      }
+      if (url.endsWith("/jobs")) return jsonResponse([]);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderRecruiter();
+    await user.click(await screen.findByRole("button", { name: /create job vacancy/i }));
+    await user.type(screen.getByLabelText("Job Title"), "   ");
+    await user.type(screen.getByLabelText("Job Description"), "Description");
+    await user.type(screen.getByLabelText("Location"), "Remote");
+    await user.click(screen.getAllByRole("button", { name: /create job vacancy/i })[1]);
+
+    expect(await screen.findByText("Enter a job title, description, and location.")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url, options]) => url.endsWith("/jobs") && options?.method === "POST")).toHaveLength(0);
+
+    await user.clear(screen.getByLabelText("Job Title"));
+    await user.type(screen.getByLabelText("Job Title"), "Software Engineer");
+    await user.click(screen.getAllByRole("button", { name: /create job vacancy/i })[1]);
+    expect(await screen.findByText("Request failed (422): Job description is invalid.")).toBeInTheDocument();
   });
 });
 
@@ -490,5 +695,302 @@ describe("candidate access to archived assessments", () => {
     expect(screen.getByText("Archived")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /continue assessment/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /start assessment/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("candidate job vacancies", () => {
+  const candidate: User = {
+    id: "candidate-jobs-1",
+    email: "candidate@example.test",
+    full_name: "Candidate",
+    role: "candidate",
+    organization_id: null,
+  };
+
+  it("renders published vacancies with enabled Apply Now buttons", async () => {
+    saveAuth("candidate-token", candidate);
+    const vacancies = [
+      jobOpening({
+        id: "published-internship",
+        title: "Software Engineering Intern",
+        employment_type: "internship",
+        location: "Colombo",
+        description: "Help build reliable software for our customers.",
+        status: "published",
+      }),
+      jobOpening({
+        id: "published-engineer",
+        title: "Software Engineer",
+        employment_type: "full-time",
+        location: "Remote",
+        description: "Own product features from design through delivery.",
+        status: "published",
+      }),
+      jobOpening({ id: "draft-job", title: "Hidden draft", status: "draft" }),
+      jobOpening({ id: "closed-job", title: "Hidden closed role", status: "closed" }),
+    ];
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return jsonResponse(vacancies);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+
+    expect(await screen.findByRole("heading", { name: /Available Job Vacancies/ })).toBeInTheDocument();
+    expect(await screen.findByText("Software Engineering Intern")).toBeInTheDocument();
+    expect(screen.getByText("Software Engineer")).toBeInTheDocument();
+    expect(screen.getByText(/Internship.*Colombo/)).toBeInTheDocument();
+    expect(screen.getByText("Help build reliable software for our customers.")).toBeInTheDocument();
+    expect(screen.getByText("Own product features from design through delivery.")).toBeInTheDocument();
+    expect(screen.getAllByText("Open", { selector: ".status" })).toHaveLength(2);
+    expect(screen.queryByText("Hidden draft")).not.toBeInTheDocument();
+    expect(screen.queryByText("Hidden closed role")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/candidate/jobs", expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer candidate-token" }),
+    }));
+
+    const applyButtons = screen.getAllByRole("button", { name: "Apply Now" });
+    expect(applyButtons).toHaveLength(2);
+    expect(applyButtons[0]).toBeEnabled();
+    expect(screen.queryByText("Coming Soon")).not.toBeInTheDocument();
+    await user.click(applyButtons[0]);
+    expect(screen.getByRole("dialog", { name: "Software Engineering Intern" })).toBeInTheDocument();
+    expect(screen.getByLabelText("CV file")).toHaveAttribute("accept", ".pdf,.docx");
+  });
+
+  it.each([
+    ["PDF", "resume.pdf", "application/pdf"],
+    ["DOCX", "resume.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  ])("accepts a selected %s CV and submits it using authenticated multipart form data", async (_format, filename, mimeType) => {
+    saveAuth("candidate-token", candidate);
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return jsonResponse([jobOpening({ status: "published" })]);
+      if (url.endsWith("/candidate/applications")) {
+        return jsonResponse(fetchMock.mock.calls.some(([requestedUrl]) => String(requestedUrl).includes("/applications") && String(requestedUrl).includes("/jobs/"))
+          ? [{ id: "application-1", job_opening_id: "job-1", job_title: "Software Engineer", original_cv_filename: filename, status: "submitted", submitted_at: "2026-10-30T12:00:00Z" }]
+          : []);
+      }
+      if (String(url).includes("/candidate/jobs/") && String(url).endsWith("/applications")) {
+        return jsonResponse({ id: "application-1", job_opening_id: "job-1", status: "submitted", submitted_at: "2026-10-30T12:00:00Z", original_cv_filename: filename }, 201);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+    await user.click(await screen.findByRole("button", { name: "Apply Now" }));
+    const file = new File(["sample CV"], filename, { type: mimeType });
+    fireEvent.change(screen.getByLabelText("CV file"), { target: { files: [file] } });
+    expect(screen.getByText(`Selected: ${filename}`)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Submit Application" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Application submitted for Software Engineer.");
+    const appliedJobCard = screen.getAllByRole("article").find(article => article.classList.contains("candidate-job-card"));
+    expect(appliedJobCard && within(appliedJobCard).getByRole("button", { name: "Applied" })).toBeDisabled();
+    const uploadCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/candidate/jobs/job-1/applications"));
+    expect(uploadCall).toBeDefined();
+    expect(uploadCall?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: expect.any(FormData),
+      headers: expect.objectContaining({ Authorization: "Bearer candidate-token" }),
+    }));
+    expect((uploadCall?.[1] as RequestInit).headers).not.toHaveProperty("Content-Type");
+    expect(((uploadCall?.[1] as RequestInit).body as FormData).get("cv")).toBe(file);
+    expect(await screen.findByRole("heading", { name: "My Job Applications" })).toBeInTheDocument();
+    expect(screen.getByText((_, element) => element?.tagName === "P" && element.textContent?.includes(filename) === true)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["PNG", "resume.png", "image/png", "Choose a PDF or DOCX file."],
+    ["JPG", "resume.jpg", "image/jpeg", "Choose a PDF or DOCX file."],
+    ["oversized", "large.pdf", "application/pdf", "The selected CV must be 10 MB or smaller."],
+    ["empty", "empty.pdf", "application/pdf", "The selected CV is empty. Choose a non-empty PDF or DOCX file."],
+  ])("rejects %s files before submission", async (_label, filename, mimeType, expectedMessage) => {
+    saveAuth("candidate-token", candidate);
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return jsonResponse([jobOpening({ status: "published" })]);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+    await user.click(await screen.findByRole("button", { name: "Apply Now" }));
+    const contents = filename === "large.pdf" ? new Uint8Array(10 * 1024 * 1024 + 1) : filename === "empty.pdf" ? "" : "invalid CV";
+    fireEvent.change(screen.getByLabelText("CV file"), { target: { files: [new File([contents], filename, { type: mimeType })] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(expectedMessage);
+    expect(screen.getByRole("button", { name: "Submit Application" })).toBeDisabled();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/candidate/jobs/") && String(url).endsWith("/applications"))).toBe(false);
+  });
+
+  it("shows loading application history and handles a duplicate application response", async () => {
+    saveAuth("candidate-token", candidate);
+    let finishHistory!: (response: ReturnType<typeof jsonResponse>) => void;
+    const pendingHistory = new Promise<ReturnType<typeof jsonResponse>>(resolve => { finishHistory = resolve; });
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return jsonResponse([jobOpening({ status: "published" })]);
+      if (url.endsWith("/candidate/applications")) return pendingHistory;
+      if (String(url).includes("/candidate/jobs/") && String(url).endsWith("/applications")) {
+        return jsonResponse({ detail: "Duplicate application." }, 409);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+    expect(await screen.findByText("Loading your job applications…")).toBeInTheDocument();
+    finishHistory(jsonResponse([]));
+    await user.click(await screen.findByRole("button", { name: "Apply Now" }));
+    fireEvent.change(screen.getByLabelText("CV file"), { target: { files: [new File(["cv"], "resume.pdf", { type: "application/pdf" })] } });
+    await user.click(screen.getByRole("button", { name: "Submit Application" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("You have already applied for this job, or it is no longer accepting applications.");
+    expect(screen.getByRole("button", { name: "Apply Now" })).toBeEnabled();
+  });
+
+  it("disables repeat submission while an application upload is in progress", async () => {
+    saveAuth("candidate-token", candidate);
+    let finishUpload!: (response: ReturnType<typeof jsonResponse>) => void;
+    const pendingUpload = new Promise<ReturnType<typeof jsonResponse>>(resolve => { finishUpload = resolve; });
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return jsonResponse([jobOpening({ status: "published" })]);
+      if (String(url).includes("/candidate/jobs/") && String(url).endsWith("/applications")) return pendingUpload;
+      if (url.endsWith("/candidate/applications")) {
+        return jsonResponse(fetchMock.mock.calls.some(([requestedUrl]) => String(requestedUrl).includes("/candidate/jobs/") && String(requestedUrl).endsWith("/applications"))
+          ? [{ id: "application-1", job_opening_id: "job-1", job_title: "Software Engineer", original_cv_filename: "resume.pdf", status: "submitted", submitted_at: "2026-10-30T12:00:00Z" }]
+          : []);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+    await user.click(await screen.findByRole("button", { name: "Apply Now" }));
+    fireEvent.change(screen.getByLabelText("CV file"), { target: { files: [new File(["cv"], "resume.pdf", { type: "application/pdf" })] } });
+    await user.click(screen.getByRole("button", { name: "Submit Application" }));
+
+    expect(screen.getByRole("button", { name: "Submitting…" })).toBeDisabled();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/candidate/jobs/job-1/applications"))).toHaveLength(1);
+    finishUpload(jsonResponse({ id: "application-1", job_opening_id: "job-1", status: "submitted", submitted_at: "2026-10-30T12:00:00Z", original_cv_filename: "resume.pdf" }, 201));
+    expect(await screen.findByRole("button", { name: "Applied" })).toBeDisabled();
+  });
+
+  it("shows actual application history with status and submission date", async () => {
+    saveAuth("candidate-token", candidate);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return jsonResponse([jobOpening({
+        id: "job-1",
+        title: "Software Engineering Intern",
+        status: "published",
+      })]);
+      if (url.endsWith("/candidate/applications")) {
+        return jsonResponse([{
+          id: "application-1",
+          job_opening_id: "job-1",
+          job_title: "Software Engineering Intern",
+          original_cv_filename: "candidate-cv.pdf",
+          status: "screening",
+          submitted_at: "2026-10-30T12:00:00Z",
+        }]);
+      }
+      return jsonResponse([]);
+    }));
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+
+    expect(await screen.findAllByText("Software Engineering Intern")).toHaveLength(2);
+    expect(screen.getByText("CV: candidate-cv.pdf")).toBeInTheDocument();
+    expect(screen.getByText("Screening")).toBeInTheDocument();
+    expect(screen.getByText(/Submitted/)).toBeInTheDocument();
+    const appliedJobCard = screen.getAllByRole("article").find(article => article.classList.contains("candidate-job-card"));
+    expect(appliedJobCard && within(appliedJobCard).getByRole("button", { name: "Applied" })).toBeDisabled();
+  });
+
+  it("uses job opening IDs for duplicate-title jobs and restores Applied from history", async () => {
+    saveAuth("candidate-token", candidate);
+    const repeatedTitleJobs = [
+      jobOpening({ id: "job-applied", title: "Software Engineer", status: "published" }),
+      jobOpening({ id: "job-not-applied", title: "Software Engineer", status: "published" }),
+    ];
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return jsonResponse(repeatedTitleJobs);
+      if (url.endsWith("/candidate/applications")) {
+        return jsonResponse([{
+          id: "application-1",
+          job_opening_id: "job-applied",
+          job_title: "Software Engineer",
+          original_cv_filename: "resume.pdf",
+          status: "submitted",
+          submitted_at: "2026-10-30T12:00:00Z",
+        }]);
+      }
+      return jsonResponse([]);
+    }));
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+
+    await screen.findByText("CV: resume.pdf");
+    const cards = screen.getAllByRole("article").filter(article => article.classList.contains("candidate-job-card"));
+    expect(cards).toHaveLength(2);
+    expect(within(cards[0]).getByRole("button", { name: "Applied" })).toBeDisabled();
+    expect(within(cards[1]).getByRole("button", { name: "Apply Now" })).toBeEnabled();
+  });
+
+  it("shows empty and error states for candidate application history", async () => {
+    saveAuth("candidate-token", candidate);
+    let historyLoads = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/applications")) {
+        historyLoads += 1;
+        return historyLoads === 1 ? jsonResponse({ detail: "private server detail" }, 503) : jsonResponse([]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+
+    expect(await screen.findByText("Could not load your job applications. Please try again.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("No job applications yet.")).toBeInTheDocument();
+  });
+
+  it("shows a loading state then an empty state when no vacancies are published", async () => {
+    saveAuth("candidate-token", candidate);
+    let finishJobs!: (response: ReturnType<typeof jsonResponse>) => void;
+    const pendingJobs = new Promise<ReturnType<typeof jsonResponse>>(resolve => { finishJobs = resolve; });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) return pendingJobs;
+      return jsonResponse([]);
+    }));
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+
+    expect(await screen.findByText("Loading job vacancies…")).toBeInTheDocument();
+    finishJobs(jsonResponse([]));
+    expect(await screen.findByText("No open job vacancies yet.")).toBeInTheDocument();
+  });
+
+  it("shows job API errors with retry while keeping assigned coding assessments available", async () => {
+    saveAuth("candidate-token", candidate);
+    let jobRequestCount = 0;
+    const assigned = assessment({ is_published: true, title: "Invited coding assessment" });
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.endsWith("/candidate/jobs")) {
+        jobRequestCount += 1;
+        if (jobRequestCount === 1) return jsonResponse({ detail: "Job service unavailable." }, 503);
+        return jsonResponse([jobOpening({ status: "published" })]);
+      }
+      if (url.endsWith("/candidate/assessments")) return jsonResponse([assigned]);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+
+    expect(await screen.findByText("Request failed (503): Job service unavailable.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Invited coding assessment" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start assessment" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("heading", { name: "Software Engineer" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start assessment" })).toBeInTheDocument();
   });
 });

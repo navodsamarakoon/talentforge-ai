@@ -6,6 +6,26 @@ export type User = {
   organization_id: string | null;
 };
 
+export type JobOpening = {
+  id: string;
+  organization_id: string;
+  title: string;
+  description: string;
+  employment_type: "internship" | "full-time" | "part-time";
+  location: string;
+  status: "draft" | "published" | "closed";
+  created_at: string;
+};
+
+export type JobApplication = {
+  id: string;
+  job_opening_id: string;
+  job_title?: string;
+  original_cv_filename: string;
+  status: "submitted" | "screening" | "rejected" | "selected";
+  submitted_at: string;
+};
+
 export type TestCase = {
   input_args: unknown[];
   expected_output: unknown;
@@ -98,10 +118,11 @@ export function getUser(): User | null {
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = window.localStorage.getItem("talentforge-token");
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.body && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },

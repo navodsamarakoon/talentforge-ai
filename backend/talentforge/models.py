@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -38,6 +38,77 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     organization: Mapped[Organization | None] = relationship()
+
+
+class JobOpening(Base):
+    __tablename__ = "job_openings"
+    __table_args__ = (
+        CheckConstraint(
+            "employment_type IN ('internship', 'full-time', 'part-time')",
+            name="ck_job_openings_employment_type",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'closed')",
+            name="ck_job_openings_status",
+        ),
+        Index("ix_job_openings_org_created", "organization_id", "created_at"),
+        Index("ix_job_openings_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    employment_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    location: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class JobApplication(Base):
+    __tablename__ = "job_applications"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_opening_id",
+            "candidate_user_id",
+            name="uq_job_application_job_candidate",
+        ),
+        UniqueConstraint("cv_storage_ref", name="uq_job_applications_cv_storage_ref"),
+        CheckConstraint(
+            "status IN ('submitted', 'screening', 'rejected', 'selected')",
+            name="ck_job_application_status",
+        ),
+        Index("ix_job_applications_candidate_submitted", "candidate_user_id", "submitted_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_opening_id: Mapped[str] = mapped_column(
+        ForeignKey("job_openings.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    candidate_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    original_cv_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    cv_mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    cv_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    cv_storage_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="submitted", server_default="submitted")
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class Assessment(Base):

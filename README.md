@@ -8,7 +8,7 @@ The platform does not make hiring decisions. AI evaluation is optional and is se
 
 - `app/` is the existing AI foundation. It is retained and its `AIEvaluator`, hybrid retriever, GraphRAG retriever, and LangSmith tracing are reused when enabled.
 - `backend/talentforge/` is a FastAPI service with SQLAlchemy models, signed expiring JWTs, Argon2 password hashing, organization-scoped recruiter access, invitations, attempts, submissions, reports, and audit events.
-- `backend/migrations/` contains the Alembic migration environment. Schema creation is performed by explicit migration commands; the service does not create or drop the platform schema at startup.
+- `backend/migrations/` contains the Alembic migration environment. Schema changes are applied with explicit migration commands; the service does not run migrations at startup.
 - `frontend/` is a React, TypeScript, Vite application with recruiter and candidate screens and Monaco Editor.
 - `docker-compose.yml` runs PostgreSQL, the API, and the frontend. PostgreSQL data uses a named persistent volume.
 
@@ -109,7 +109,26 @@ After adding the required local values to `.env`:
 docker compose up --build
 ```
 
-Open `http://localhost:8080`. Compose applies Alembic migrations before starting the API. The database is persisted in the `postgres-data` named volume. Avoid `docker compose down -v` if you need to keep that database.
+Open `http://localhost:8080`. The API does not apply Alembic migrations automatically. Apply required migrations explicitly as documented below. PostgreSQL data is persisted in the `postgres-data` named volume and private candidate CVs in the `cv-data` named volume. Avoid `docker compose down -v` if you need to keep either.
+
+### Candidate CV storage and migrations
+
+Candidate CVs are stored outside the frontend/static directories, in `/var/lib/talentforge/cvs` by default. In Docker Compose this directory is backed by the private `cv-data` named volume and is writable only by the unprivileged backend user. To use a different backend path, set `CV_UPLOAD_DIR` and update the Compose volume target to mount a private persistent volume at that same path. Do not mount CV storage into the frontend or expose it through a static-file server.
+
+Apply the candidate application migration manually after backing up the database:
+
+```powershell
+docker compose exec backend python -m alembic -c backend/alembic.ini upgrade 0004_job_applications
+```
+
+For a host-based backend, set `CV_UPLOAD_DIR` to a private directory writable only by the backend process, set `PYTHONPATH`, then run:
+
+```powershell
+$env:PYTHONPATH = "$PWD\backend;$PWD"
+.\venv\Scripts\python.exe -m alembic -c backend\alembic.ini upgrade 0004_job_applications
+```
+
+Do not run the migration until you have reviewed the migration and confirmed the expected prior revision (`0003_job_openings`) is current.
 
 For optional local Ollama evaluation, set `AI_ENABLED=true`, set `OLLAMA_HOST` to an address reachable from the backend container (usually `http://host.docker.internal:11434`), configure `OLLAMA_MODEL`, and pull that model in Ollama. The backend image includes the AI client dependencies. Retrieval context is separately opt-in with `RETRIEVAL_ENABLED=true` and `INSTALL_RETRIEVAL_DEPS=true`; the backend can then use the existing ChromaDB database and GraphRAG requires reachable Neo4j environment settings. ChromaDB may be updated by its existing `get_or_create_collection` behavior; candidate containers never mount it. LangSmith tracing follows the existing project's LangSmith environment configuration. None of these optional services is required for core account, assessment, invitation, submission-persistence, or reporting workflows.
 

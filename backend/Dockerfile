@@ -18,9 +18,12 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
 COPY backend/ /workspace/backend/
 COPY app/ /workspace/app/
 COPY knowledge_base/ /workspace/knowledge_base/
+RUN mkdir -p /var/lib/talentforge/cvs \
+    && chown 10001:10001 /var/lib/talentforge/cvs \
+    && chmod 700 /var/lib/talentforge/cvs
 USER 10001:10001
 EXPOSE 8000
-CMD ["sh", "-c", "python -m alembic -c backend/alembic.ini upgrade head && python -m uvicorn talentforge.main:app --host 0.0.0.0 --port 8000 --app-dir backend"]
+CMD ["python", "-m", "uvicorn", "talentforge.main:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "backend"]
 
 FROM python:3.12-slim AS sandbox-runner
 ENV PYTHONDONTWRITEBYTECODE=1 \

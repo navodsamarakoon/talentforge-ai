@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     sandbox_runner_url: str = "http://sandbox-runner:8001"
     sandbox_timeout_seconds: int = Field(default=5, ge=1, le=30)
     sandbox_max_code_chars: int = Field(default=20_000, ge=100, le=100_000)
+    cv_upload_dir: Path = Path("/var/lib/talentforge/cvs")
     ai_enabled: bool = False
     ai_timeout_seconds: int = Field(default=270, ge=5, le=600)
     retrieval_enabled: bool = False

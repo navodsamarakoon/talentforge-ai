@@ -3,14 +3,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Callable
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from talentforge.ai import evaluate_submission
 from talentforge.config import get_settings
+from talentforge.cv_storage import CVUploadError, remove_stored_cv, store_cv
 from talentforge.database import get_db
 from talentforge.models import (
     Assessment,
@@ -18,6 +19,8 @@ from talentforge.models import (
     AuditEvent,
     EvaluationReport,
     Invitation,
+    JobApplication,
+    JobOpening,
     Organization,
     Question,
     Submission,
@@ -32,9 +35,14 @@ from talentforge.schemas import (
     AssessmentUpdate,
     AssessmentView,
     AuthResponse,
+    CandidateRegisterRequest,
+    JobApplicationHistoryView,
+    JobApplicationView,
     EvaluationReportView,
     InvitationCreate,
     InvitationView,
+    JobOpeningCreate,
+    JobOpeningView,
     LoginRequest,
     QuestionCreate,
     QuestionUpdate,
@@ -121,6 +129,21 @@ def _org_assessment(db: Session, assessment_id: str, recruiter: User, lock: bool
     if assessment is None:
         raise HTTPException(status_code=404, detail="Assessment not found.")
     return assessment
+
+
+def _org_job_opening(db: Session, job_id: str, recruiter: User, lock: bool = False) -> JobOpening:
+    scope = (
+        JobOpening.id == job_id,
+        JobOpening.organization_id == recruiter.organization_id,
+    )
+    if lock:
+        locked_id = db.scalar(select(JobOpening.id).where(*scope).with_for_update())
+        if locked_id is None:
+            raise HTTPException(status_code=404, detail="Job opening not found.")
+    job = db.scalar(select(JobOpening).where(*scope))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job opening not found.")
+    return job
 
 
 def _ensure_active(assessment: Assessment) -> None:
@@ -285,6 +308,186 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.post("/jobs", response_model=JobOpeningView, status_code=201)
+def create_job_opening(
+    payload: JobOpeningCreate,
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> JobOpening:
+    if recruiter.organization_id is None:
+        raise HTTPException(status_code=403, detail="A recruiter organization is required to create job openings.")
+    job = JobOpening(
+        organization_id=recruiter.organization_id,
+        title=payload.title,
+        description=payload.description,
+        employment_type=payload.employment_type,
+        location=payload.location,
+        status="draft",
+    )
+    db.add(job)
+    try:
+        db.flush()
+        _audit(db, recruiter, "job_opening.created", "job_opening", job.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Job opening could not be saved.") from None
+    db.refresh(job)
+    return job
+
+
+@router.get("/jobs", response_model=list[JobOpeningView])
+def list_recruiter_job_openings(
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> list[JobOpening]:
+    if recruiter.organization_id is None:
+        return []
+    return list(db.scalars(
+        select(JobOpening)
+        .where(JobOpening.organization_id == recruiter.organization_id)
+        .order_by(JobOpening.created_at.desc(), JobOpening.id.desc())
+    ).all())
+
+
+@router.post("/jobs/{job_id}/publish", response_model=JobOpeningView)
+def publish_job_opening(
+    job_id: str,
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> JobOpening:
+    if recruiter.organization_id is None:
+        raise HTTPException(status_code=403, detail="A recruiter organization is required to manage job openings.")
+    job = _org_job_opening(db, job_id, recruiter, lock=True)
+    if job.status != "draft":
+        raise HTTPException(status_code=409, detail="Only draft job openings can be published.")
+    job.status = "published"
+    _audit(db, recruiter, "job_opening.published", "job_opening", job.id)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.post("/jobs/{job_id}/close", response_model=JobOpeningView)
+def close_job_opening(
+    job_id: str,
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> JobOpening:
+    if recruiter.organization_id is None:
+        raise HTTPException(status_code=403, detail="A recruiter organization is required to manage job openings.")
+    job = _org_job_opening(db, job_id, recruiter, lock=True)
+    if job.status == "closed":
+        raise HTTPException(status_code=409, detail="Job opening is already closed.")
+    job.status = "closed"
+    _audit(db, recruiter, "job_opening.closed", "job_opening", job.id)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.get("/candidate/jobs", response_model=list[JobOpeningView])
+def list_published_job_openings(
+    db: Db,
+    candidate: Annotated[User, Depends(require_role("candidate"))],
+) -> list[JobOpening]:
+    return list(db.scalars(
+        select(JobOpening)
+        .where(JobOpening.status == "published")
+        .order_by(JobOpening.created_at.desc(), JobOpening.id.desc())
+    ).all())
+
+
+@router.post(
+    "/candidate/jobs/{job_id}/applications",
+    response_model=JobApplicationView,
+    status_code=201,
+)
+async def submit_job_application(
+    job_id: str,
+    db: Db,
+    candidate: Annotated[User, Depends(require_role("candidate"))],
+    cv: Annotated[UploadFile, File()],
+) -> JobApplication:
+    job = db.scalar(
+        select(JobOpening)
+        .where(JobOpening.id == job_id)
+        .with_for_update()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job opening not found.")
+    if job.status != "published":
+        raise HTTPException(status_code=409, detail="Applications are only accepted for published job openings.")
+    existing = db.scalar(select(JobApplication.id).where(
+        JobApplication.job_opening_id == job.id,
+        JobApplication.candidate_user_id == candidate.id,
+    ))
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="You have already applied for this job opening.")
+
+    try:
+        stored_cv = await store_cv(cv)
+    except CVUploadError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from None
+    application = JobApplication(
+        job_opening_id=job.id,
+        candidate_user_id=candidate.id,
+        original_cv_filename=stored_cv.original_filename,
+        cv_mime_type=stored_cv.mime_type,
+        cv_sha256=stored_cv.sha256,
+        cv_storage_ref=stored_cv.storage_ref,
+        status="submitted",
+    )
+    try:
+        db.add(application)
+        db.flush()
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        remove_stored_cv(stored_cv.storage_ref)
+        duplicate = db.scalar(select(JobApplication.id).where(
+            JobApplication.job_opening_id == job.id,
+            JobApplication.candidate_user_id == candidate.id,
+        ))
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail="You have already applied for this job opening.") from None
+        logger.exception("Could not save job application after an integrity error.")
+        raise HTTPException(status_code=500, detail="Application could not be saved.") from None
+    except SQLAlchemyError:
+        db.rollback()
+        remove_stored_cv(stored_cv.storage_ref)
+        logger.exception("Could not save job application.")
+        raise HTTPException(status_code=500, detail="Application could not be saved.") from None
+    return application
+
+
+@router.get(
+    "/candidate/applications",
+    response_model=list[JobApplicationHistoryView],
+)
+def list_candidate_job_applications(
+    db: Db,
+    candidate: Annotated[User, Depends(require_role("candidate"))],
+) -> list[dict[str, Any]]:
+    applications = db.execute(
+        select(JobApplication, JobOpening.title)
+        .join(JobOpening, JobOpening.id == JobApplication.job_opening_id)
+        .where(JobApplication.candidate_user_id == candidate.id)
+        .order_by(JobApplication.submitted_at.desc(), JobApplication.id.desc())
+    ).all()
+    return [
+        {
+            "id": application.id,
+            "job_opening_id": application.job_opening_id,
+            "job_title": title,
+            "status": application.status,
+            "submitted_at": application.submitted_at,
+            "original_cv_filename": application.original_cv_filename,
+        }
+        for application, title in applications
+    ]
+
+
 @router.post("/auth/register", response_model=AuthResponse, status_code=201)
 def register(payload: RegisterRequest, db: Db) -> AuthResponse:
     organization = Organization(name=payload.organization_name.strip())
@@ -303,6 +506,27 @@ def register(payload: RegisterRequest, db: Db) -> AuthResponse:
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="An account or organization with those details already exists.") from None
+    db.refresh(user)
+    return AuthResponse(access_token=issue_token(user.id, user.token_version), user=UserView.model_validate(user))
+
+
+@router.post("/auth/register/candidate", response_model=AuthResponse, status_code=201)
+def register_candidate(payload: CandidateRegisterRequest, db: Db) -> AuthResponse:
+    user = User(
+        email=payload.email.lower(),
+        full_name=payload.full_name,
+        password_hash=hash_password(payload.password),
+        role="candidate",
+        organization_id=None,
+    )
+    db.add(user)
+    try:
+        db.flush()
+        _audit(db, user, "candidate.registered", "user", user.id)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with that email already exists.") from None
     db.refresh(user)
     return AuthResponse(access_token=issue_token(user.id, user.token_version), user=UserView.model_validate(user))
 

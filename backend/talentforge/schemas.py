@@ -15,6 +15,20 @@ class RegisterRequest(BaseModel):
     organization_name: str = Field(min_length=1, max_length=160)
 
 
+class CandidateRegisterRequest(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=160)
+    password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Full name must contain at least one non-whitespace character.")
+        return normalized
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(max_length=128)
@@ -38,6 +52,49 @@ class AuthResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     user: UserView
+
+
+class JobOpeningCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=20_000)
+    employment_type: Literal["internship", "full-time", "part-time"]
+    location: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title", "description", "location")
+    @classmethod
+    def normalize_nonempty_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("This field must contain at least one non-whitespace character.")
+        return normalized
+
+
+class JobOpeningView(ORMModel):
+    id: str
+    organization_id: str
+    title: str
+    description: str
+    employment_type: Literal["internship", "full-time", "part-time"]
+    location: str
+    status: Literal["draft", "published", "closed"]
+    created_at: datetime
+
+
+class JobApplicationView(ORMModel):
+    id: str
+    job_opening_id: str
+    status: Literal["submitted", "screening", "rejected", "selected"]
+    submitted_at: datetime
+    original_cv_filename: str
+
+
+class JobApplicationHistoryView(BaseModel):
+    id: str
+    job_opening_id: str
+    job_title: str
+    status: Literal["submitted", "screening", "rejected", "selected"]
+    submitted_at: datetime
+    original_cv_filename: str
 
 
 class TestCaseInput(BaseModel):
