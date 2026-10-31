@@ -9,5 +9,7 @@ PyJWT>=2.10,<3
 pwdlib[argon2]>=0.2,<1
 python-multipart>=0.0.20,<1
 email-validator>=2.2,<3
+pymupdf>=1.24,<2
+python-docx>=1.1,<2
 pytest>=8.3,<9
 httpx>=0.28,<1
