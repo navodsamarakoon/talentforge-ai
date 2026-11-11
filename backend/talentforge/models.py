@@ -63,6 +63,7 @@ class JobOpening(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     employment_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    requirements: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     location: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     created_at: Mapped[datetime] = mapped_column(
@@ -109,6 +110,48 @@ class JobApplication(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+class RecruiterSummary(Base):
+    __tablename__ = "recruiter_summaries"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "run_date", name="uq_recruiter_summary_org_date"),
+        CheckConstraint("state IN ('pending','claimed','sent','failed','unknown')", name="ck_recruiter_summary_state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
+    run_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    recipients: Mapped[list] = mapped_column(JSON, nullable=False)
+    candidates: Mapped[list] = mapped_column(JSON, nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outcome_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CVScreening(Base):
+    __tablename__ = "cv_screenings"
+    __table_args__ = (
+        CheckConstraint("state IN ('queued','extracting','ready','dispatching','accepted','unknown','failed')", name="ck_cv_screening_state"),
+        CheckConstraint("extraction_attempts BETWEEN 0 AND 3", name="ck_cv_screening_attempts"),
+        CheckConstraint("notification_state IS NULL OR notification_state IN ('claimed','sent','failed','unknown')", name="ck_cv_notification_state"),
+    )
+    application_id: Mapped[str] = mapped_column(ForeignKey("job_applications.id", ondelete="RESTRICT"), primary_key=True)
+    dispatch_id: Mapped[str] = mapped_column(String(36), default=new_id, unique=True, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="queued", nullable=False)
+    extraction_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    generation_token: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    profile: Mapped[dict | None] = mapped_column(JSON)
+    match_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    summary_id: Mapped[str | None] = mapped_column(ForeignKey("recruiter_summaries.id", ondelete="RESTRICT"), index=True)
+    cv_text: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    workflow_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision: Mapped[str | None] = mapped_column(String(16))
+    notification_state: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class Assessment(Base):

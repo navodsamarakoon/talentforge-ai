@@ -54,7 +54,27 @@ class AuthResponse(BaseModel):
     user: UserView
 
 
+class JobRequirements(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    mandatory_skills: list[str] = Field(default_factory=list, max_length=30)
+    preferred_skills: list[str] = Field(default_factory=list, max_length=30)
+    qualifications: list[str] = Field(default_factory=list, max_length=20)
+    minimum_experience_months: int = Field(default=0, ge=0, le=600)
+    minimum_match_score: int = Field(default=70, ge=0, le=100)
+
+    @field_validator("mandatory_skills", "preferred_skills", "qualifications")
+    @classmethod
+    def validate_terms(cls, values: list[str]) -> list[str]:
+        terms = [value.strip() for value in values]
+        if any(not term or len(term) > 200 for term in terms):
+            raise ValueError("Each requirement must contain 1–200 characters.")
+        if len({term.casefold() for term in terms}) != len(terms):
+            raise ValueError("Requirements must be unique within each list.")
+        return terms
+
+
 class JobOpeningCreate(BaseModel):
+    requirements: JobRequirements | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=20_000)
     employment_type: Literal["internship", "full-time", "part-time"]
@@ -70,6 +90,7 @@ class JobOpeningCreate(BaseModel):
 
 
 class JobOpeningView(ORMModel):
+    requirements: JobRequirements | None = None
     id: str
     organization_id: str
     title: str
@@ -95,6 +116,7 @@ class JobApplicationHistoryView(BaseModel):
     status: Literal["submitted", "screening", "rejected", "selected"]
     submitted_at: datetime
     original_cv_filename: str
+    processing_status: str | None = None
 
 
 class TestCaseInput(BaseModel):

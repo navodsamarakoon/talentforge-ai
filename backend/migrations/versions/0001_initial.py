@@ -15,7 +15,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    Base.metadata.create_all(bind=op.get_bind())
+    original = {"organizations", "users", "assessments", "questions", "test_cases", "invitations", "attempts", "submissions", "evaluation_reports", "audit_events"}
+    Base.metadata.create_all(bind=op.get_bind(), tables=[t for t in Base.metadata.sorted_tables if t.name in original])
 
 
 def downgrade() -> None:

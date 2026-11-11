@@ -17,6 +17,18 @@ class Settings(BaseSettings):
     sandbox_timeout_seconds: int = Field(default=5, ge=1, le=30)
     sandbox_max_code_chars: int = Field(default=20_000, ge=100, le=100_000)
     cv_upload_dir: Path = Path("/var/lib/talentforge/cvs")
+    cv_automation_enabled: bool = False
+    cv_durable_queue_enabled: bool = False
+    cv_queue_capacity: int = Field(default=32, ge=1, le=1000)
+    cv_worker_concurrency: int = Field(default=1, ge=1, le=8)
+    cv_ollama_url: str = "http://host.docker.internal:11434"
+    cv_ollama_model: str = "llama3.2:3b"
+    cv_ollama_timeout_seconds: int = Field(default=120, ge=5, le=300)
+    cv_profile_max_tokens: int = Field(default=1200, ge=256, le=2500)
+    n8n_auto_dispatch_enabled: bool = False
+    n8n_webhook_url: str | None = None
+    n8n_webhook_secret: SecretStr | None = None
+    n8n_callback_secret: SecretStr | None = None
     ai_enabled: bool = False
     ai_timeout_seconds: int = Field(default=270, ge=5, le=600)
     retrieval_enabled: bool = False

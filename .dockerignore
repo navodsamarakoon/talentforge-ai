@@ -1,6 +1,12 @@
 .git
 .env
 .env.*
+backups
+.cv-verify
+.callback-verify
+.n8n-http-verify
+.n8n-readiness
+.outbox-verify
 venv
 .venv
 **/__pycache__

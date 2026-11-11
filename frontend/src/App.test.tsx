@@ -599,6 +599,13 @@ describe("recruiter job vacancy management", () => {
         title: "Software Engineering Intern",
         description: "Work with the engineering team.",
         employment_type: "internship",
+        requirements: {
+          mandatory_skills: [],
+          preferred_skills: [],
+          qualifications: [],
+          minimum_experience_months: 0,
+          minimum_match_score: 70,
+        },
         location: "Colombo",
       }),
     }));

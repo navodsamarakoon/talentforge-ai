@@ -7,6 +7,13 @@ export type User = {
 };
 
 export type JobOpening = {
+  requirements?: {
+    mandatory_skills: string[];
+    preferred_skills: string[];
+    qualifications: string[];
+    minimum_experience_months: number;
+    minimum_match_score: number;
+  } | null;
   id: string;
   organization_id: string;
   title: string;
@@ -24,6 +31,7 @@ export type JobApplication = {
   original_cv_filename: string;
   status: "submitted" | "screening" | "rejected" | "selected";
   submitted_at: string;
+  processing_status?: string | null;
 };
 
 export type TestCase = {

@@ -3,9 +3,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Callable
 
 import jwt
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
@@ -42,6 +42,7 @@ from talentforge.schemas import (
     InvitationCreate,
     InvitationView,
     JobOpeningCreate,
+    JobRequirements,
     JobOpeningView,
     LoginRequest,
     QuestionCreate,
@@ -321,6 +322,7 @@ def create_job_opening(
         title=payload.title,
         description=payload.description,
         employment_type=payload.employment_type,
+        requirements=payload.requirements.model_dump() if payload.requirements else None,
         location=payload.location,
         status="draft",
     )
@@ -332,6 +334,21 @@ def create_job_opening(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Job opening could not be saved.") from None
+    db.refresh(job)
+    return job
+
+
+@router.put("/jobs/{job_id}/requirements", response_model=JobOpeningView)
+def update_job_requirements(
+    job_id: str,
+    payload: JobRequirements,
+    db: Db,
+    recruiter: Annotated[User, Depends(require_role("recruiter"))],
+) -> JobOpening:
+    job = _org_job_opening(db, job_id, recruiter, lock=True)
+    job.requirements = payload.model_dump()
+    _audit(db, recruiter, "job_opening.requirements_updated", "job_opening", job.id)
+    db.commit()
     db.refresh(job)
     return job
 
@@ -405,6 +422,7 @@ def list_published_job_openings(
 )
 async def submit_job_application(
     job_id: str,
+    background_tasks: BackgroundTasks,
     db: Db,
     candidate: Annotated[User, Depends(require_role("candidate"))],
     cv: Annotated[UploadFile, File()],
@@ -412,7 +430,6 @@ async def submit_job_application(
     job = db.scalar(
         select(JobOpening)
         .where(JobOpening.id == job_id)
-        .with_for_update()
     )
     if job is None:
         raise HTTPException(status_code=404, detail="Job opening not found.")
@@ -439,8 +456,31 @@ async def submit_job_application(
         status="submitted",
     )
     try:
+        # The file read can suspend this async handler. Acquire the job lock
+        # only afterward so another upload cannot block that read on the lock.
+        job = db.scalar(select(JobOpening).where(JobOpening.id == job_id)
+                        .with_for_update().execution_options(populate_existing=True))
+        if job is None or job.status != "published":
+            db.rollback()
+            remove_stored_cv(stored_cv.storage_ref)
+            if job is None:
+                raise HTTPException(404, "Job opening not found.")
+            raise HTTPException(409, "Applications are only accepted for published job openings.")
+        settings = get_settings()
+        if settings.cv_automation_enabled and settings.cv_durable_queue_enabled:
+            from talentforge.cv_automation import queue_has_capacity
+            if not queue_has_capacity(db):
+                db.rollback()
+                remove_stored_cv(stored_cv.storage_ref)
+                raise HTTPException(503, "CV processing queue is full. Please try again later.",
+                                    headers={"Retry-After": "60"})
         db.add(application)
         db.flush()
+        if get_settings().cv_automation_enabled:
+            from talentforge.models import CVScreening
+            from talentforge.cv_automation import QUEUE_PENDING
+            db.add(CVScreening(application_id=application.id,
+                               generation_token=QUEUE_PENDING if settings.cv_durable_queue_enabled else None))
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -458,6 +498,9 @@ async def submit_job_application(
         remove_stored_cv(stored_cv.storage_ref)
         logger.exception("Could not save job application.")
         raise HTTPException(status_code=500, detail="Application could not be saved.") from None
+    if settings.cv_automation_enabled and not settings.cv_durable_queue_enabled:
+        from talentforge.cv_automation import process_application
+        background_tasks.add_task(process_application, application.id)
     return application
 
 
@@ -469,9 +512,19 @@ def list_candidate_job_applications(
     db: Db,
     candidate: Annotated[User, Depends(require_role("candidate"))],
 ) -> list[dict[str, Any]]:
+    from talentforge.models import CVScreening
+
+    durable = CVScreening.generation_token.startswith("q:")
+    handoff_started = case(
+        (durable, func.coalesce(CVScreening.dispatch_started_at, CVScreening.created_at)),
+        else_=CVScreening.created_at,
+    )
     applications = db.execute(
-        select(JobApplication, JobOpening.title)
+        select(JobApplication, JobOpening.title, CVScreening.state, CVScreening.error_code,
+               CVScreening.lease_until, CVScreening.created_at, CVScreening.notification_state,
+               durable, handoff_started)
         .join(JobOpening, JobOpening.id == JobApplication.job_opening_id)
+        .outerjoin(CVScreening, CVScreening.application_id == JobApplication.id)
         .where(JobApplication.candidate_user_id == candidate.id)
         .order_by(JobApplication.submitted_at.desc(), JobApplication.id.desc())
     ).all()
@@ -483,8 +536,57 @@ def list_candidate_job_applications(
             "status": application.status,
             "submitted_at": application.submitted_at,
             "original_cv_filename": application.original_cv_filename,
+            "processing_status": (
+                "Decision recorded. Email delivery could not be confirmed."
+                if notification_state == "unknown"
+                else "Decision recorded. Email delivery failed."
+                if notification_state == "failed"
+                else "Job requirements need evidence review. Your application is saved."
+                if error_code == "job_matching_unresolved"
+                else "Waiting for the recruiter to configure mandatory job requirements. Your application is saved."
+                if error_code == "job_matching_requirements_missing"
+                else "Workflow delivery could not be confirmed. Your application is saved and requires recovery review."
+                if processing_state == "unknown"
+                else "Queued for CV processing."
+                if durable and processing_state == "queued"
+                else "CV processing needs attention. Your application is saved."
+                if durable and processing_state == "ready" and error_code
+                else "Processing your CV."
+                if durable and processing_state == "extracting" and lease_until is not None
+                and (lease_until if lease_until.tzinfo else lease_until.replace(tzinfo=timezone.utc)) > datetime.now(timezone.utc)
+                else "Workflow screening needs attention. Your application is saved and requires recovery review."
+                if processing_state in {"accepted", "dispatching"} and application.status in {"submitted", "screening"}
+                and handoff_at is not None
+                and (handoff_at if handoff_at.tzinfo else handoff_at.replace(tzinfo=timezone.utc))
+                <= datetime.now(timezone.utc) - timedelta(minutes=10)
+                else ("CV processing was interrupted. Queued for recovery." if durable
+                      else "CV processing was interrupted. Your application is saved and needs a processing retry.")
+                if (
+                    processing_state == "extracting"
+                    and (lease_until is None or
+                         (lease_until if lease_until.tzinfo else lease_until.replace(tzinfo=timezone.utc))
+                         <= datetime.now(timezone.utc))
+                ) or (
+                    processing_state == "queued" and created_at is not None
+                    and (created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc))
+                    <= datetime.now(timezone.utc) - timedelta(seconds=get_settings().cv_ollama_timeout_seconds + 60)
+                )
+                else "CV extraction timed out. Your application is saved and needs a processing retry."
+                if error_code in {"ollama_timeout", "extraction_timeout"}
+                else "No readable CV text was found. Upload a PDF with selectable text or a DOCX."
+                if error_code == "no_extractable_text"
+                else "This CV exceeds the screening text limit. Upload a shorter CV."
+                if error_code == "screening_text_out_of_range"
+                else "CV processing needs attention. Your application is saved."
+                if processing_state == "failed"
+                else "Screening is in progress or awaiting verification."
+                if application.status == "screening"
+                else "CV processing is in progress."
+                if processing_state in {"queued", "extracting", "ready", "dispatching"}
+                else None
+            ),
         }
-        for application, title in applications
+        for application, title, processing_state, error_code, lease_until, created_at, notification_state, durable, handoff_at in applications
     ]
 
 

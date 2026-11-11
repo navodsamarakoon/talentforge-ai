@@ -194,6 +194,7 @@ function RecruiterHome() {
           title: jobTitle.trim(),
           description: jobDescription.trim(),
           employment_type: jobEmploymentType,
+          requirements: readJobRequirements(event.currentTarget as HTMLFormElement),
           location: jobLocation.trim(),
         }),
       });
@@ -285,6 +286,7 @@ function RecruiterHome() {
         <label>Employment Type<select value={jobEmploymentType} onChange={event => setJobEmploymentType(event.target.value as JobOpening["employment_type"])}><option value="internship">Internship</option><option value="full-time">Full-time</option><option value="part-time">Part-time</option></select></label>
         <label>Location<input required maxLength={200} value={jobLocation} onChange={event => setJobLocation(event.target.value)} placeholder="e.g. Remote" /></label>
         <label className="span-two">Job Description<textarea required maxLength={20000} rows={5} value={jobDescription} onChange={event => setJobDescription(event.target.value)} placeholder="Describe the role and responsibilities." /></label>
+        <JobRequirementFields />
         <div className="span-two form-actions"><button type="button" className="button secondary" onClick={() => setShowJobForm(false)}>Cancel</button><button className="button primary" disabled={savingJob}>{savingJob ? "Creating…" : "Create Job Vacancy"}<ArrowRight size={15} /></button></div>
       </form>}
       {jobOpeningsLoading ? <Busy label="Loading job vacancies…" /> : jobOpeningsError && jobOpenings.length === 0
@@ -295,6 +297,7 @@ function RecruiterHome() {
             <div className="job-vacancy-main"><div className="title-line"><h3>{job.title}</h3><span className={`status ${job.status}`}><i />{job.status}</span></div>
               <p>{job.employment_type === "full-time" ? "Full-time" : job.employment_type === "part-time" ? "Part-time" : "Internship"}<span className="dot-sep">·</span>{job.location}<span className="dot-sep">·</span>Created {new Date(job.created_at).toLocaleDateString()}</p>
               <p className="job-vacancy-description">{job.description}</p>
+              <JobRequirementEditor job={job} onSaved={() => loadJobOpenings(false)} />
             </div>
             <div className="assessment-actions">{job.status === "draft" && <button className="button secondary" disabled={pendingJobAction !== null} onClick={() => void updateJobStatus(job, "publish")}>{pendingJobAction?.id === job.id && pendingJobAction.action === "publish" ? "Publishing…" : "Publish Job"}</button>}{job.status === "published" && <button className="button secondary danger-button" disabled={pendingJobAction !== null} onClick={() => void updateJobStatus(job, "close")}>{pendingJobAction?.id === job.id && pendingJobAction.action === "close" ? "Closing…" : "Close Job"}</button>}</div>
           </article>)}</div>}
@@ -302,6 +305,56 @@ function RecruiterHome() {
     <div className="section-title list-header"><div><span className="eyebrow">Your organization</span><h2>{showArchived ? "Archived assessments" : "Active assessments"} <span className="count">{assessments.length}</span></h2></div><div className="assessment-view-switch" role="group" aria-label="Assessment workspace view"><button type="button" className={`button ${showArchived ? "secondary" : "primary"}`} aria-pressed={!showArchived} onClick={() => { setShowArchived(false); setLoading(true); }}>Active</button><button type="button" className={`button ${showArchived ? "primary" : "secondary"}`} aria-pressed={showArchived} onClick={() => { setShowArchived(true); setLoading(true); }}><Archive size={15} />Archived</button></div></div>
     {loading ? <Busy /> : error && assessments.length === 0 ? <div className="empty-state"><h3>Assessments could not be loaded.</h3><button className="button secondary" onClick={() => void load()}>Try again</button></div> : showAssessmentEmpty ? <div className="empty-state">{showArchived ? <><h3>No archived assessments.</h3><p>Assessments you archive will appear here. Their invitations and candidate history remain preserved.</p></> : <><div className="empty-icon"><Code2 /></div><h3>Your first assessment is one step away.</h3><p>Create a draft, add Python questions and hidden test cases, then publish it.</p><button className="button primary" onClick={() => setShowCreate(true)}><Plus size={16} />Create an assessment</button></>}</div> : <><div className="assessment-filters"><label>Search assessments<input aria-label="Search assessments" type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search title, role, or instructions" /></label><label>Status<select aria-label="Filter by status" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="published">Published</option></select></label></div>{filteredAssessments.length === 0 ? <div className="empty-state"><h3>No matching assessments.</h3><p>Try a different search or status filter.</p></div> : <div className="assessment-list">{filteredAssessments.map(item => <article className="assessment-card" key={item.id}><Link to={`/assessments/${item.id}`} className="assessment-card-link"><div className="assessment-symbol"><Code2 size={19} /></div><div className="assessment-main"><div className="title-line"><h3>{item.title}</h3><span className={`status ${item.is_archived ? "archived" : item.is_published ? "published" : "draft"}`}><i />{item.is_archived ? "Archived" : item.is_published ? "Published" : "Draft"}</span></div><p>{item.role} <span className="dot-sep">·</span> {item.questions.length} {item.questions.length === 1 ? "question" : "questions"} <span className="dot-sep">·</span> {item.time_limit_minutes} min <span className="dot-sep">·</span> Created {new Date(item.created_at).toLocaleDateString()}</p><p className="assessment-description">{item.instructions || "No candidate instructions provided."}</p></div></Link><div className="assessment-actions">{item.is_archived && <button className="button secondary" disabled={pendingAction !== null} onClick={() => void unarchiveAssessment(item)}>{pendingAction?.id === item.id && pendingAction.action === "unarchive" ? "Restoring…" : "Restore"}</button>}{item.has_candidate_records ? !item.is_archived && <button className="button secondary" disabled={pendingAction !== null} onClick={() => void archiveAssessment(item)}>{pendingAction?.id === item.id && pendingAction.action === "archive" ? "Archiving…" : "Archive"}</button> : <button className="button secondary danger-button" disabled={pendingAction !== null} onClick={() => void deleteAssessment(item)}>{pendingAction?.id === item.id && pendingAction.action === "delete" ? "Deleting…" : "Delete"}</button>}</div></article>)}</div>}</>}
   </Shell>;
+}
+
+function readJobRequirements(form: HTMLFormElement) {
+  const fields = new FormData(form);
+  const list = (key: string) => String(fields.get(key) ?? "").split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  return {
+    mandatory_skills: list("mandatory_skills"),
+    preferred_skills: list("preferred_skills"),
+    qualifications: list("qualifications"),
+    minimum_experience_months: Number(fields.get("minimum_experience_months")),
+    minimum_match_score: Number(fields.get("minimum_match_score")),
+  };
+}
+
+function JobRequirementFields({ requirements }: { requirements?: JobOpening["requirements"] }) {
+  return <fieldset className="span-two">
+    <legend>Screening requirements</legend>
+    <label>Mandatory skills (one per line)<textarea name="mandatory_skills" defaultValue={requirements?.mandatory_skills.join("\n")} /></label>
+    <label>Preferred skills (one per line)<textarea name="preferred_skills" defaultValue={requirements?.preferred_skills.join("\n")} /></label>
+    <label>Qualifications (one per line)<textarea name="qualifications" defaultValue={requirements?.qualifications.join("\n")} /></label>
+    <label>Minimum experience in months<input name="minimum_experience_months" type="number" min={0} max={600} required defaultValue={requirements?.minimum_experience_months ?? 0} /></label>
+    <label>Matching threshold<input name="minimum_match_score" type="number" min={0} max={100} required defaultValue={requirements?.minimum_match_score ?? 70} /></label>
+  </fieldset>;
+}
+
+function JobRequirementEditor({ job, onSaved }: { job: JobOpening; onSaved: () => Promise<void> }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const requirements = readJobRequirements(event.currentTarget);
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/jobs/${job.id}/requirements`, { method: "PUT", body: JSON.stringify(requirements) });
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save screening requirements.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <details>
+    <summary>Edit screening requirements</summary>
+    <form onSubmit={save}>
+      <JobRequirementFields requirements={job.requirements} />
+      {error && <ErrorMessage>{error}</ErrorMessage>}
+      <button className="button secondary" disabled={saving}>{saving ? "Saving…" : "Save requirements"}</button>
+    </form>
+  </details>;
 }
 
 function QuestionEditor({ assessment, selectedId, onSelectedId, onSaved }: {
@@ -617,7 +670,7 @@ function CandidateHome() {
           : applications.length === 0
             ? <div className="empty-state"><h3>No job applications yet.</h3><p>When you apply for a vacancy, it will appear here.</p></div>
             : <div className="candidate-application-list">{applications.map(application => <article className="candidate-application-card" key={application.id}>
-              <div><h3>{application.job_title ?? "Job vacancy"}</h3><p>CV: {application.original_cv_filename}</p><p>Submitted {new Date(application.submitted_at).toLocaleDateString()}</p></div>
+              <div><h3>{application.job_title ?? "Job vacancy"}</h3><p>CV: {application.original_cv_filename}</p><p>Submitted {new Date(application.submitted_at).toLocaleDateString()}</p>{application.processing_status && <p role="status">{application.processing_status}</p>}</div>
               <span className={`status ${application.status === "rejected" ? "closed" : application.status === "selected" ? "published" : "draft"}`}><i />{application.status.charAt(0).toUpperCase() + application.status.slice(1)}</span>
             </article>)}</div>}
     </section>

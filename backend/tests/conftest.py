@@ -5,6 +5,10 @@ os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["JWT_SECRET"] = "test-only-secret-value-that-is-at-least-32-chars"
 os.environ["AI_ENABLED"] = "false"
 os.environ["RETRIEVAL_ENABLED"] = "false"
+os.environ["CV_AUTOMATION_ENABLED"] = "false"
+os.environ["CV_DURABLE_QUEUE_ENABLED"] = "false"
+os.environ["N8N_AUTO_DISPATCH_ENABLED"] = "false"
+os.environ["LANGSMITH_TRACING"] = "false"
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pytest
