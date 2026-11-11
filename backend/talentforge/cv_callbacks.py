@@ -60,9 +60,7 @@ class SummaryReceipt(BaseModel):
 
 def claim_daily_summaries(db, now):
     local = now.astimezone(timezone(timedelta(hours=5, minutes=30)))
-    cutoff = datetime.combine(local.date(), time(6), tzinfo=local.tzinfo)
-    if local < cutoff:
-        cutoff -= timedelta(days=1)
+    cutoff = datetime.combine(local.date(), time.min, tzinfo=local.tzinfo)
     run_date = cutoff.date().isoformat()
     claimed = []
     # Lock organizations in consistent order. Each application belongs to one job.

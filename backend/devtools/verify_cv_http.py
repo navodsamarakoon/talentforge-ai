@@ -37,7 +37,7 @@ fixture_password = "Synthetic-joined-password-2026!"
 def migrate(target):
     p=subprocess.run(['python','-m','alembic','-c','/src/backend/alembic.ini','upgrade',target],capture_output=True)
     assert p.returncode==0,'Synthetic migration failed'
-migrate('0008_recruiter_summaries')
+migrate('head')
 with factory() as db:
     org=Organization(name='Synthetic Org');other=Organization(name='Other Synthetic Org');db.add_all([org,other]);db.flush()
     jobs=[JobOpening(organization_id=o.id,title='Synthetic Job',description='Test',employment_type='full-time',location='Test',status='published',requirements={'mandatory_skills':['Python']}) for o in [org,other]]
@@ -431,7 +431,7 @@ with tempfile.TemporaryDirectory() as tmp,TestClient(app) as client:
     with httpx.Client(trust_env=False) as receiver:assert receiver.get('http://n8n:5678/counts').json()['accepted']==len(ids)
 
     summary_url = "/api/integrations/n8n/recruiter-summaries"
-    cutoff = datetime.now(timezone.utc).replace(hour=0, minute=30, second=0, microsecond=0) + timedelta(days=2)
+    cutoff = datetime.now(timezone.utc).replace(hour=18, minute=30, second=0, microsecond=0) + timedelta(days=2)
     # Set only the synthetic fixture timestamps so the boundary check is deterministic.
     with factory() as db:
         for app_id in (ids[0], ids[3]):

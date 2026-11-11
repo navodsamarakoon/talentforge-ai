@@ -119,6 +119,7 @@ input::placeholder, textarea::placeholder { color: #a3acbb; }
 .create-panel { margin-bottom: 42px; }
 .job-vacancies-panel { margin-bottom: 38px; }
 .job-vacancies-panel > .section-title { margin-bottom: 18px; }
+.job-vacancy-view-switch { justify-content: flex-end; margin-bottom: 18px; }
 .job-vacancies-panel .section-title h2 { display: flex; align-items: center; gap: 9px; }
 .job-vacancy-form { padding-top: 18px; margin: 0 0 20px; border-top: 1px solid #eef0f5; }
 .job-vacancy-form textarea { min-height: 120px; }
@@ -177,6 +178,70 @@ td .status { margin-bottom: 2px; }.score { color: #3d57d4; font: 800 14px Manrop
 .candidate-jobs-section { margin-top: 40px; }
 .candidate-jobs-heading { margin-bottom: 16px; }
 .candidate-jobs-heading h2 { display: flex; align-items: center; gap: 9px; }
+.vacancy-alert-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #171514;
+}
+.vacancy-alert-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #35231b;
+  color: var(--orange);
+}
+.vacancy-alert-copy h3 { margin: 0; color: var(--ink); font-size: 14px; }
+.vacancy-alert-copy p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.vacancy-alert-copy .vacancy-alert-status { color: var(--ink); font-weight: 700; }
+.vacancy-alert-copy .vacancy-alert-error { color: #ffae9e; }
+.vacancy-alert-switch {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+.vacancy-alert-switch:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+.vacancy-alert-switch[aria-disabled="true"] { cursor: not-allowed; opacity: .7; }
+.vacancy-alert-track {
+  display: flex;
+  align-items: center;
+  width: 44px;
+  height: 24px;
+  padding: 3px;
+  border: 1px solid #847872;
+  border-radius: 999px;
+  background: #34302e;
+}
+.vacancy-alert-track::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #f7ede7;
+}
+.vacancy-alert-switch[aria-checked="true"] .vacancy-alert-track {
+  justify-content: flex-end;
+  border-color: var(--orange);
+  background: var(--orange);
+}
+.vacancy-alert-switch[aria-checked="true"] .vacancy-alert-track::before { background: #20140e; }
+@media (max-width: 480px) {
+  .vacancy-alert-card { gap: 8px; padding: 12px 10px; }
+  .vacancy-alert-icon { width: 34px; height: 34px; }
+}
 .candidate-job-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
 .candidate-job-card { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
 .candidate-job-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -417,6 +482,7 @@ td b, .criterion-grid b { color: #f3efe9; }
 .candidate-processing span { color: #d0c5bb; }
 .candidate-processing b { color: #b8aea3; }
 @media (max-width: 600px) {
+  .job-vacancy-view-switch { justify-content: flex-start; }
   .topbar { height: 62px; }
   .page { width: calc(100% - 32px); }
   .auth-story h1 { letter-spacing: -1.7px; }

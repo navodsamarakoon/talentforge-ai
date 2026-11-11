@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -35,6 +35,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"))
     token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    vacancy_notifications: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     organization: Mapped[Organization | None] = relationship()
@@ -110,6 +111,50 @@ class JobApplication(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+class VacancyNotificationEvent(Base):
+    __tablename__ = "vacancy_notification_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    vacancy_id: Mapped[str] = mapped_column(ForeignKey("job_openings.id"), unique=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class VacancyNotificationDelivery(Base):
+    __tablename__ = "vacancy_notification_deliveries"
+    __table_args__ = (
+        UniqueConstraint("event_id", "candidate_id", name="uq_vacancy_notification_candidate"),
+        CheckConstraint("state IN ('pending','claimed','sent','failed','skipped','delivery_unknown')",
+                        name="ck_vacancy_notification_state"),
+        Index("ix_vacancy_notification_due", "state", "available_at"),
+        Index("ix_vacancy_notification_attempt", "last_attempt_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    event_id: Mapped[str] = mapped_column(ForeignKey("vacancy_notification_events.id"))
+    candidate_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    recipient: Mapped[str] = mapped_column(String(320))
+    state: Mapped[str] = mapped_column(String(24), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_token: Mapped[str | None] = mapped_column(String(36))
+    outcome: Mapped[str | None] = mapped_column(String(24))
+
+
+class VacancySmtpBudget(Base):
+    __tablename__ = "vacancy_smtp_budget"
+    __table_args__ = (
+        CheckConstraint("id = 1 AND reservations >= 0", name="ck_vacancy_smtp_budget_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    budget_day: Mapped[date] = mapped_column(Date)
+    reservations: Mapped[int] = mapped_column(default=0)
+    auth_blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RecruiterSummary(Base):

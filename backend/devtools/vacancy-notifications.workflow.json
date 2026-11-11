@@ -1,0 +1,227 @@
+{
+  "id": "TfVacancyMail001",
+  "name": "TalentForge AI — Job Vacancy Notifications",
+  "active": false,
+  "nodes": [
+    {
+      "id": "vacancy-poll",
+      "name": "Poll Vacancy Outbox",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "vacancy-1",
+      "name": "Claim Pending Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        },
+        "url": "http://runner:8000/api/integrations/n8n/vacancy-notifications/claim"
+      }
+    },
+    {
+      "id": "vacancy-prepare",
+      "name": "Prepare Personalized Emails",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "fieldToSplitOut": "deliveries",
+        "options": {}
+      }
+    },
+    {
+      "id": "vacancy-authorize",
+      "name": "Authorize SMTP Submission",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "retryOnFail": false,
+      "parameters": {
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        },
+        "url": "={{ 'http://runner:8000/api/integrations/n8n/vacancy-notifications/' + $json.id + '/authorize-smtp' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({claim_token: $json.claim_token}) }}"
+      }
+    },
+    {
+      "id": "vacancy-send",
+      "name": "Gmail SMTP",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        960,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": false,
+      "parameters": {
+        "fromEmail": "",
+        "toEmail": "={{ $json.recipient }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      }
+    },
+    {
+      "id": "vacancy-4",
+      "name": "Record SMTP Outcome",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        },
+        "url": "={{ 'http://runner:8000/api/integrations/n8n/vacancy-notifications/' + $('Authorize SMTP Submission').first().json.id + '/receipt' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n const item = $('Authorize SMTP Submission').first().json;\n const accepted = $json.accepted;\n const rejected = $json.rejected;\n const sent = Array.isArray(accepted) && accepted.length === 1 &&\n   accepted[0] === item.recipient && Array.isArray(rejected) && rejected.length === 0;\n return JSON.stringify({claim_token: item.claim_token, outcome: sent ? 'sent' : 'unknown'});\n})() }}"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "vacancy-failure",
+      "name": "Record SMTP Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        220
+      ],
+      "parameters": {
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        },
+        "url": "={{ 'http://runner:8000/api/integrations/n8n/vacancy-notifications/' + $('Authorize SMTP Submission').first().json.id + '/receipt' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n const item = $('Authorize SMTP Submission').first().json;\n const error = $json.error;\n const command = error && error.command;\n const structured = ['MAIL FROM', 'RCPT TO', 'DATA'].includes(command) && Number.isInteger(error?.responseCode);\n const refusal = typeof error === 'string' && /^Can't send mail - all recipients were rejected: ([45][0-9]{2})(?:[ -]|$)/.exec(error);\n const code = structured ? error.responseCode : refusal ? Number(refusal[1]) : null;\n const authFailed = (typeof command === 'string' && /^AUTH(?: |$)/i.test(command) && error.responseCode === 535) ||\n   (typeof error === 'string' && /^Invalid login: 535(?:[ -]|$)/i.test(error));\n const definitive = code !== null;\n const outcome = authFailed ? 'auth_failed' : definitive && code >= 400 && code < 500 ? 'transient' :\n   definitive && code >= 500 && code < 600 ? 'failed' : 'unknown';\n return JSON.stringify({claim_token: item.claim_token, outcome});\n})() }}"
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Poll Vacancy Outbox": {
+      "main": [
+        [
+          {
+            "node": "Claim Pending Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Pending Notification": {
+      "main": [
+        [
+          {
+            "node": "Prepare Personalized Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Personalized Emails": {
+      "main": [
+        [
+          {
+            "node": "Authorize SMTP Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail SMTP": {
+      "main": [
+        [
+          {
+            "node": "Record SMTP Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record SMTP Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorize SMTP Submission": {
+      "main": [
+        [
+          {
+            "node": "Gmail SMTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Colombo",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "executionTimeout": 120
+  }
+}

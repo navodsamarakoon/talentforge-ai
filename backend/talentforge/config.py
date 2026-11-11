@@ -1,8 +1,17 @@
 from functools import lru_cache
 from pathlib import Path
+from uuid import UUID
 
-from pydantic import Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class VacancyOneShot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    delivery_id: UUID
+    recipient: str = Field(min_length=1, max_length=320)
+    event_id: UUID
+    vacancy_id: UUID
 
 
 class Settings(BaseSettings):
@@ -29,6 +38,10 @@ class Settings(BaseSettings):
     n8n_webhook_url: str | None = None
     n8n_webhook_secret: SecretStr | None = None
     n8n_callback_secret: SecretStr | None = None
+    vacancy_email_delivery_enabled: bool = False
+    vacancy_email_daily_cap: int = Field(default=25, ge=1)
+    vacancy_one_shot: VacancyOneShot | None = None
+    candidate_dashboard_base_url: str | None = None
     ai_enabled: bool = False
     ai_timeout_seconds: int = Field(default=270, ge=5, le=600)
     retrieval_enabled: bool = False

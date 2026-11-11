@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 from talentforge.ai import evaluate_submission
 from talentforge.config import get_settings
 from talentforge.cv_storage import CVUploadError, remove_stored_cv, store_cv
+from talentforge.vacancy_outbox import enqueue_publication
 from talentforge.database import get_db
 from talentforge.models import (
     Assessment,
@@ -380,6 +381,7 @@ def publish_job_opening(
         raise HTTPException(status_code=409, detail="Only draft job openings can be published.")
     job.status = "published"
     _audit(db, recruiter, "job_opening.published", "job_opening", job.id)
+    enqueue_publication(db, job)
     db.commit()
     db.refresh(job)
     return job

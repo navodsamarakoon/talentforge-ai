@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from talentforge.api import router
 from talentforge.cv_callbacks import router as cv_router
 from talentforge.config import get_settings
+from talentforge.vacancy_notifications import router as vacancy_router
 
 settings = get_settings()
 app = FastAPI(title="TalentForge AI API", version="0.1.0")
@@ -16,3 +17,4 @@ app.add_middleware(
 )
 app.include_router(router, prefix="/api")
 app.include_router(cv_router, prefix="/api")
+app.include_router(vacancy_router, prefix="/api")

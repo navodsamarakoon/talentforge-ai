@@ -582,6 +582,10 @@ describe("recruiter job vacancy management", () => {
     expect(screen.getByText(/Full-time/)).toBeInTheDocument();
     expect(screen.getByText(/Remote.*Created/)).toBeInTheDocument();
     expect(screen.getByText("published", { selector: ".status" })).toBeInTheDocument();
+    const vacancySection = screen.getByRole("region", { name: /Job Vacancies/ });
+    await user.click(within(vacancySection).getByRole("button", { name: "Archived" }));
+    expect(within(vacancySection).getByRole("heading", { name: "No archived job vacancies." })).toBeInTheDocument();
+    await user.click(within(vacancySection).getByRole("button", { name: "Active" }));
 
     await user.click(screen.getByRole("button", { name: /create job vacancy/i }));
     await user.type(screen.getByLabelText("Job Title"), "Software Engineering Intern");
@@ -611,10 +615,11 @@ describe("recruiter job vacancy management", () => {
     }));
   });
 
-  it("publishes draft vacancies and closes published vacancies, refreshing the list", async () => {
+  it("moves closed vacancies to Archived and keeps them there after a fresh load", async () => {
     let vacancy = jobOpening();
+    const existingClosed = jobOpening({ id: "job-closed", title: "Closed Designer", status: "closed", location: "Colombo", employment_type: "part-time" });
     const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
-      if (url.endsWith("/jobs") && !options?.method) return jsonResponse([vacancy]);
+      if (url.endsWith("/jobs") && !options?.method) return jsonResponse([vacancy, existingClosed]);
       if (url.endsWith("/publish")) {
         vacancy = jobOpening({ ...vacancy, status: "published" });
         return jsonResponse(vacancy);
@@ -627,22 +632,41 @@ describe("recruiter job vacancy management", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
-    renderRecruiter();
+    const { unmount } = renderRecruiter();
 
     expect(await screen.findByText("Software Engineer")).toBeInTheDocument();
+    const vacancies = within(screen.getByRole("region", { name: /Job Vacancies/ }));
+    expect(vacancies.getByRole("button", { name: "Active" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(vacancies.getByRole("button", { name: "Archived" }));
+    expect(vacancies.getByRole("heading", { name: "Closed Designer" })).toBeInTheDocument();
+    expect(vacancies.getByText(/Part-time.*Colombo/)).toBeInTheDocument();
+    expect(vacancies.queryByRole("heading", { name: "Software Engineer" })).not.toBeInTheDocument();
+    expect(vacancies.queryByRole("button", { name: /Create Job Vacancy|Edit Screening Requirements/i })).not.toBeInTheDocument();
+    await user.click(vacancies.getByRole("button", { name: "Active" }));
     await user.click(screen.getByRole("button", { name: "Publish Job" }));
     expect(await screen.findByRole("button", { name: "Close Job" })).toBeInTheDocument();
     expect(await screen.findByRole("status")).toHaveTextContent('Job vacancy "Software Engineer" was published.');
     expect(screen.getByText("published", { selector: ".status" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Close Job" }));
-    expect(await screen.findByText("closed", { selector: ".status" })).toBeInTheDocument();
     expect(await screen.findByRole("status")).toHaveTextContent('Job vacancy "Software Engineer" was closed.');
+    expect(vacancies.queryByRole("heading", { name: "Software Engineer" })).not.toBeInTheDocument();
+    expect(vacancies.getByRole("heading", { name: "Job Vacancies 0" })).toBeInTheDocument();
+    expect(vacancies.getByRole("button", { name: "Active" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(vacancies.getByRole("button", { name: "Archived" }));
+    expect(vacancies.getByRole("heading", { name: "Job Vacancies 2" })).toBeInTheDocument();
+    expect(vacancies.getAllByRole("heading", { name: "Software Engineer" })).toHaveLength(1);
+    expect(vacancies.getAllByText("closed", { selector: ".status" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Publish Job" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Close Job" })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/jobs/job-1/publish", expect.objectContaining({ method: "POST" }));
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/jobs/job-1/close", expect.objectContaining({ method: "POST" }));
-    expect(fetchMock.mock.calls.filter(([url, options]) => url.endsWith("/jobs") && !options?.method)).toHaveLength(3);
+    unmount();
+    renderRecruiter();
+    const refreshed = within(screen.getByRole("region", { name: /Job Vacancies/ }));
+    await user.click(await refreshed.findByRole("button", { name: "Archived" }));
+    expect(refreshed.getAllByRole("heading", { name: "Software Engineer" })).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url, options]) => url.endsWith("/jobs") && !options?.method)).toHaveLength(2);
   });
 
   it("shows vacancies API errors and validates creation input", async () => {
@@ -736,8 +760,11 @@ describe("candidate job vacancies", () => {
       jobOpening({ id: "draft-job", title: "Hidden draft", status: "draft" }),
       jobOpening({ id: "closed-job", title: "Hidden closed role", status: "closed" }),
     ];
-    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/candidate/jobs")) return jsonResponse(vacancies);
+      if (url.endsWith("/candidate/vacancy-notifications")) {
+        return jsonResponse(init?.method === "PUT" ? JSON.parse(String(init.body)) : { enabled: false });
+      }
       return jsonResponse([]);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -753,6 +780,20 @@ describe("candidate job vacancies", () => {
     expect(screen.getAllByText("Open", { selector: ".status" })).toHaveLength(2);
     expect(screen.queryByText("Hidden draft")).not.toBeInTheDocument();
     expect(screen.queryByText("Hidden closed role")).not.toBeInTheDocument();
+    const vacancyEmailPreference = await screen.findByRole("switch", { name: "Job Vacancy Alerts" });
+    const vacancySection = screen.getByRole("region", { name: /Available Job Vacancies/ });
+    const alertCard = within(vacancySection).getByRole("region", { name: "Job Vacancy Alerts" });
+    expect(alertCard.nextElementSibling).toHaveClass("candidate-job-list");
+    expect(vacancyEmailPreference).toHaveAttribute("aria-checked", "false");
+    await user.click(vacancyEmailPreference);
+    expect(await screen.findByText("Email alerts enabled")).toBeInTheDocument();
+    expect(vacancyEmailPreference).toHaveAttribute("aria-checked", "true");
+    await user.click(vacancyEmailPreference);
+    expect(await screen.findByText("Email alerts are off")).toBeInTheDocument();
+    expect(vacancyEmailPreference).toHaveAttribute("aria-checked", "false");
+    expect(fetchMock.mock.calls.filter(([url, init]) =>
+      url.endsWith("/candidate/vacancy-notifications") && init?.method === "PUT"
+    ).map(([, init]) => init?.body)).toEqual(['{"enabled":true}', '{"enabled":false}']);
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/candidate/jobs", expect.objectContaining({
       headers: expect.objectContaining({ Authorization: "Bearer candidate-token" }),
     }));
@@ -764,6 +805,38 @@ describe("candidate job vacancies", () => {
     await user.click(applyButtons[0]);
     expect(screen.getByRole("dialog", { name: "Software Engineering Intern" })).toBeInTheDocument();
     expect(screen.getByLabelText("CV file")).toHaveAttribute("accept", ".pdf,.docx");
+  });
+
+  it("keeps the saved value during a keyboard-triggered request and after a failed save", async () => {
+    saveAuth("candidate-token", candidate);
+    let rejectSave: (error: Error) => void = () => {};
+    const pendingSave = new Promise<never>((_resolve, reject) => { rejectSave = reject; });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/candidate/vacancy-notifications")) {
+        return init?.method === "PUT" ? pendingSave : jsonResponse({ enabled: true });
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/candidate"]}><App /></MemoryRouter>);
+    expect(await screen.findByText("Email alerts enabled")).toBeInTheDocument();
+    const control = screen.getByRole("switch", { name: "Job Vacancy Alerts" });
+    expect(control).toHaveAttribute("aria-checked", "true");
+    control.focus();
+    await user.keyboard(" ");
+    expect(screen.getByText("Saving preference…")).toBeInTheDocument();
+    expect(control).toHaveFocus();
+    expect(control).toHaveAttribute("aria-disabled", "true");
+    expect(control).toHaveAttribute("aria-checked", "true");
+    await user.keyboard("{Enter}");
+    await user.click(control);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+    rejectSave(new Error("Fixture network failure"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not save");
+    expect(screen.getByText("Email alerts enabled")).toBeInTheDocument();
+    expect(control).toHaveAttribute("aria-checked", "true");
+    expect(control).toHaveAttribute("aria-disabled", "false");
   });
 
   it.each([
@@ -792,7 +865,8 @@ describe("candidate job vacancies", () => {
     expect(screen.getByText(`Selected: ${filename}`)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Submit Application" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Application submitted for Software Engineer.");
+    const applications = screen.getByRole("region", { name: "My Job Applications" });
+    expect(await within(applications).findByRole("status")).toHaveTextContent("Application submitted for Software Engineer.");
     const appliedJobCard = screen.getAllByRole("article").find(article => article.classList.contains("candidate-job-card"));
     expect(appliedJobCard && within(appliedJobCard).getByRole("button", { name: "Applied" })).toBeDisabled();
     const uploadCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/candidate/jobs/job-1/applications"));

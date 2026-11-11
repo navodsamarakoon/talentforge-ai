@@ -39,7 +39,7 @@ if len(sys.argv) > 1:
     sys.exit()
 
 subprocess.run([sys.executable, "-m", "alembic", "-c", "/src/backend/alembic.ini",
-                "upgrade", "0008_recruiter_summaries"], check=True)
+                "upgrade", "head"], check=True)
 with SessionLocal() as db:
     org = Organization(name="Fictional Queue")
     db.add(org)

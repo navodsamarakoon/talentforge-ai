@@ -3,17 +3,21 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 
 assert.equal(process.env.TALENTFORGE_SMTP_FIXTURE, "1");
 const joined = process.env.TALENTFORGE_HTTP_FIXTURE === "1";
 const live = process.env.TALENTFORGE_LIVE_JOINED === "1";
+const vacancy = process.env.TALENTFORGE_VACANCY_FIXTURE === "1";
+const oneShot = process.env.TALENTFORGE_VACANCY_ONE_SHOT_FIXTURE === "1";
 const routes = readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1);
 assert.ok(routes.every(row => row.trim().split(/\s+/)[1] !== "00000000"));
 if (!joined && !live) assert.equal(routes.length, 0);
 const definition = JSON.parse(readFileSync("/fixture/workflow.json", "utf8"));
 const messages = [];
 const refused = [];
+let rejectFixtureAuth = false;
 const server = createServer(socket => {
   socket.setEncoding("utf8");
   socket.write("220 fixture SMTP\r\n");
@@ -38,13 +42,17 @@ const server = createServer(socket => {
         }
         socket.write("250 fixture accepted\r\n");
       } else if (/^(EHLO|HELO) /i.test(line)) {
-        socket.write("250 fixture\r\n");
+        socket.write(vacancy ? "250-fixture\r\n250 AUTH PLAIN\r\n" : "250 fixture\r\n");
+      } else if (vacancy && /^AUTH PLAIN /i.test(line)) {
+        socket.write(rejectFixtureAuth ? "535 5.7.8 fixture credentials rejected\r\n" : "235 authenticated\r\n");
       } else if (/^MAIL FROM:/i.test(line)) {
         recipients = [];
         socket.write("250 sender accepted\r\n");
       } else if (/^RCPT TO:/i.test(line)) {
         const recipient = /<([^>]+)>/.exec(line)?.[1];
-        if (!recipient?.endsWith("@example.com") || recipient === "failed@example.com") {
+        if (recipient === "temporary@example.com") {
+          socket.write("450 fixture temporarily rejected\r\n");
+        } else if (!recipient?.endsWith("@example.com") || recipient === "failed@example.com") {
           refused.push(recipient);
           socket.write("550 fixture rejected\r\n");
         } else {
@@ -83,9 +91,9 @@ const credential = { id: "FixtureSMTPOnly1", name: "Loopback fixture SMTP", type
 const callbackCredential = { id: "FixtureCallback1", name: "Fixture callback auth", type: "httpHeaderAuth" };
 const file = "/tmp/smtp-fixture-credentials.json";
 const credentials = [{ ...credential, data: {
-  host: "127.0.0.1", port: 2525, user: "", password: "", secure: false, disableStartTls: true,
+  host: "127.0.0.1", port: 2525, user: vacancy ? "fixture" : "", password: vacancy ? "fixture" : "", secure: false, disableStartTls: true,
 } }];
-if (joined || live) credentials.push({ ...callbackCredential, data: {
+if (joined || live || vacancy || oneShot) credentials.push({ ...callbackCredential, data: {
   name: "X-TalentForge-Callback-Secret", value: "synthetic-callback",
 } });
 const webhookCredential = { id: "FixtureWebhookAuth1", name: "Fixture webhook auth", type: "httpHeaderAuth" };
@@ -105,10 +113,10 @@ async function verifyLive() {
   const summaryMode = refusalMode || process.env.TALENTFORGE_LIVE_FAILURES === "summary";
   const nodes = definition.nodes.map(node => {
     const n = structuredClone(node);
-    n.disabled = n.name === "Daily 06:00 Colombo";
+    n.disabled = n.type === "n8n-nodes-base.scheduleTrigger";
     if (summaryMode && n.disabled) {
       assert.equal(definition.settings.timezone, "Asia/Colombo");
-      assert.deepEqual(n.parameters.rule.interval, [{field:"days",daysInterval:1,triggerAtHour:6,triggerAtMinute:0}]);
+      assert.deepEqual(n.parameters.rule.interval, [{field:"days",daysInterval:1,triggerAtHour:0,triggerAtMinute:0}]);
       return {...n, disabled:false, type:"n8n-nodes-base.webhook", typeVersion:2,
         webhookId:"12c7990e-cb3a-4059-9d18-efdbdc191e7b",
         parameters:{httpMethod:"POST",path:"fixture-summary",authentication:"headerAuth",responseMode:"onReceived"},
@@ -417,7 +425,8 @@ async function verifyJoined() {
   assert.equal(fixture.status, 200);
   const envelope = await fixture.json();
   assert.equal(envelope.body.candidate_email, "synthetic-0@example.com");
-  const excluded = new Set(["Webhook", "Daily 06:00 Colombo", "Ollama Chat Model"]);
+  const excluded = new Set(["Webhook", "Ollama Chat Model",
+    ...definition.nodes.filter(n => n.type === "n8n-nodes-base.scheduleTrigger").map(n => n.name)]);
   const nodes = definition.nodes.filter(n => !excluded.has(n.name)).map(node => {
     const n = structuredClone(node);
     n.disabled = false;
@@ -470,10 +479,183 @@ async function verifyJoined() {
   console.log("PASS: real n8n callbacks, disposable PostgreSQL, candidate and summary SMTP receipts, and replay. Model outputs were fixtures.");
 }
 
+async function verifyVacancy() {
+  const id = definition.id;
+  const claimToken = "ae3e6956-b6cf-42e1-a52d-eb42c3f277ee";
+  const full = process.env.TALENTFORGE_VACANCY_FULL_FIXTURE === "1";
+  const cases = ["selected", "auth-failure", "uncertain", "opted-out"];
+  if (full) cases.push("failed", "temporary", "receipt-offline");
+  const deliveries = cases.map(name => ({
+    id: name, claim_token: claimToken, recipient: `${name}@example.com`,
+    subject: "Fictional vacancy", text: "View vacancy at https://jobs.example.com/candidate",
+  }));
+  const unclaimed = [...deliveries];
+  const receipts = [];
+  let offlineReceipts = 0;
+  const endpoint = createHttpServer(async (req, res) => {
+    assert.equal(req.headers["x-talentforge-callback-secret"], "synthetic-callback");
+    res.setHeader("Content-Type", "application/json");
+    if (req.url.endsWith("/claim")) {
+      const delivery = deliveries.shift();
+      rejectFixtureAuth = delivery?.id === "auth-failure";
+      res.end(JSON.stringify({ deliveries: delivery ? [{id: delivery.id, claim_token: delivery.claim_token}] : [] }));
+      return;
+    }
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const deliveryId = req.url.split("/").at(-2);
+    if (req.url.endsWith("/receipt") && deliveryId === "receipt-offline") {
+      offlineReceipts++;
+      res.writeHead(503).end("{}");
+      return;
+    }
+    if (req.url.endsWith("/authorize-smtp")) {
+      assert.equal(JSON.parse(body).claim_token, claimToken);
+      const delivery = unclaimed.find(item => item.id === deliveryId);
+      assert.ok(delivery);
+      if (deliveryId === "opted-out") {
+        res.writeHead(409).end("{}");
+      } else {
+        res.end(JSON.stringify(delivery));
+      }
+      return;
+    }
+    receipts.push([req.url.split("/").at(-2), JSON.parse(body)]);
+    res.end('{"recorded":true}');
+  });
+  await new Promise(resolve => endpoint.listen(8000, "127.0.0.1", resolve));
+  try {
+    for (const node of definition.nodes) {
+      if (node.type === "n8n-nodes-base.scheduleTrigger") {
+        Object.assign(node, { type: "n8n-nodes-base.manualTrigger", typeVersion: 1, parameters: {} });
+      } else if (node.type === "n8n-nodes-base.emailSend") {
+        node.parameters.fromEmail = "fixture@example.com";
+        node.credentials = { smtp: webhookCredentialRef(credential) };
+      } else if (node.type === "n8n-nodes-base.httpRequest") {
+        node.parameters.url = node.parameters.url.replace("http://runner:8000", "http://127.0.0.1:8000");
+        node.credentials = { httpHeaderAuth: webhookCredentialRef(callbackCredential) };
+      }
+    }
+    const path = "/tmp/vacancy-smtp-fixture.json";
+    writeFileSync(path, JSON.stringify(definition));
+    await cli("import:workflow", "--input", path);
+    for (let index = 0; index < 3; index++) await cli("execute", "--id", id, "--rawOutput");
+    await assert.rejects(cli("execute", "--id", id, "--rawOutput"), /409|authorized|Error/i);
+    const expectedReceipts = [["selected", "sent"], ["auth-failure", "auth_failed"], ["uncertain", "unknown"]];
+    const expectedRecipients = [["selected@example.com"], ["uncertain@example.com"]];
+    if (full) {
+      await cli("execute", "--id", id, "--rawOutput");
+      await cli("execute", "--id", id, "--rawOutput");
+      await assert.rejects(cli("execute", "--id", id, "--rawOutput"), /503|unavailable|Error/i);
+      await cli("execute", "--id", id, "--rawOutput");
+      expectedReceipts.push(["failed", "failed"], ["temporary", "transient"]);
+      expectedRecipients.push(["receipt-offline@example.com"]);
+      assert.equal(offlineReceipts, 3);
+    }
+    assert.deepEqual(receipts, expectedReceipts.map(([name, outcome]) => [name, { claim_token: claimToken, outcome }]));
+    assert.deepEqual(messages.map(message => message.recipients), expectedRecipients);
+    console.log("PASS: real n8n vacancy SMTP acceptance, AUTH 535 stop receipt, uncertainty and opt-out.");
+  } finally { endpoint.close(); }
+}
+
+async function verifyOneShot() {
+  const { oneShotWorkflow } = await import("./vacancy-one-shot.mjs");
+  for (const node of definition.nodes) {
+    if (node.type === "n8n-nodes-base.httpRequest") {
+      node.parameters.url = node.parameters.url.replace("http://runner:8000", "http://127.0.0.1:8000");
+      node.credentials = { httpHeaderAuth: webhookCredentialRef(callbackCredential) };
+    } else if (node.type === "n8n-nodes-base.emailSend") {
+      node.parameters.fromEmail = "fixture@example.com";
+      node.credentials = { smtp: webhookCredentialRef(credential) };
+    }
+  }
+  let approval;
+  let responseRecipient;
+  let scheduled = false;
+  let scheduledClaims = 0;
+  const receipts = [];
+  const expected = { sender: "fixture@example.com", subject: "Fictional vacancy", text: "Fictional body." };
+  const endpoint = createHttpServer(async (req, res) => {
+    assert.equal(req.headers["x-talentforge-callback-secret"], "synthetic-callback");
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    res.setHeader("Content-Type", "application/json");
+    if (req.url.endsWith("/claim-one")) {
+      assert.deepEqual(body, approval);
+      if (scheduled && ++scheduledClaims > 1) {
+        res.statusCode = 409;
+        res.end('{"detail":"Already claimed"}');
+        return;
+      }
+      res.end(JSON.stringify({ id: approval.delivery_id, claim_token: "fixture-token",
+        recipient: responseRecipient, event_id: approval.event_id, vacancy_id: approval.vacancy_id,
+        subject: expected.subject, text: expected.text }));
+    } else {
+      assert.ok(req.url.endsWith(`/${approval.delivery_id}/receipt`));
+      assert.equal(body.claim_token, "fixture-token");
+      receipts.push(body.outcome);
+      res.end('{"recorded":true}');
+    }
+  });
+  await new Promise(resolve => endpoint.listen(8000, "127.0.0.1", resolve));
+  try {
+    const cases = ["selected@example.com", "uncertain@example.com", "selected@example.com",
+      "failed@example.com", "temporary@example.com"];
+    for (const [index, recipient] of cases.entries()) {
+      const id = `OneShotFixture0${index}`;
+      approval = { delivery_id: "d123e456-e89b-42d3-a456-426614174000", recipient,
+        event_id: "a123e456-e89b-42d3-a456-426614174000", vacancy_id: "b123e456-e89b-42d3-a456-426614174000" };
+      responseRecipient = index === 2 ? "unapproved@example.com" : recipient;
+      const path = "/tmp/vacancy-one-shot-fixture.json";
+      writeFileSync(path, JSON.stringify(oneShotWorkflow(definition, id, approval, expected)));
+      await cli("import:workflow", "--input", path);
+      try {
+        await cli("execute", "--id", id, "--rawOutput");
+      } catch (error) {
+        if (index !== 2) throw error;
+      }
+    }
+    assert.deepEqual(receipts.slice(0, 2), ["sent", "unknown"]);
+    assert.deepEqual(receipts.slice(-2), ["failed", "failed"]);
+    assert.ok(receipts.length <= 5 && receipts.slice(2, -2).every(outcome => outcome === "unknown"));
+    assert.deepEqual(messages.map(message => message.recipients), [["selected@example.com"], ["uncertain@example.com"]]);
+    const id = "OneShotFixtureScheduled";
+    approval = { ...approval, recipient: "selected@example.com" };
+    responseRecipient = approval.recipient;
+    scheduled = true;
+    const workflow = oneShotWorkflow(definition, id, approval, expected);
+    const trigger = workflow.nodes[0];
+    trigger.type = "n8n-nodes-base.scheduleTrigger";
+    trigger.typeVersion = 1.2;
+    trigger.parameters = { rule: { interval: [{ field: "seconds", secondsInterval: 2 }] } };
+    const path = "/tmp/vacancy-one-shot-scheduled-fixture.json";
+    writeFileSync(path, JSON.stringify(workflow));
+    await cli("import:workflow", "--input", path);
+    await cli("publish:workflow", "--id", id);
+    const n8n = spawn("n8n", ["start"], { stdio: "ignore" });
+    try {
+      const deadline = Date.now() + 60000;
+      while ((scheduledClaims < 2 || receipts.at(-1) !== "sent") && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      assert.ok(scheduledClaims >= 2);
+      assert.equal(receipts.at(-1), "sent");
+      assert.deepEqual(messages.map(message => message.recipients),
+        [["selected@example.com"], ["uncertain@example.com"], ["selected@example.com"]]);
+    } finally { n8n.kill(); }
+    console.log("PASS: n8n one-shot SMTP acceptance, both refusal classes, disconnect after DATA, recipient guard and two real scheduled ticks with one loopback submission.");
+  } finally { endpoint.close(); }
+}
+
 await new Promise(resolve => server.listen(2525, "127.0.0.1", resolve));
 try {
   await cli("import:credentials", "--input", file);
-  if (live) {
+  if (oneShot) {
+    await verifyOneShot();
+  } else if (vacancy) {
+    await verifyVacancy();
+  } else if (live) {
     await verifyLive();
   } else if (joined) {
     await verifyJoined();

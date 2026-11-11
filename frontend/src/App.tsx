@@ -1,7 +1,7 @@
 import { Fragment, lazy, Suspense, type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { loader } from "@monaco-editor/react";
-import { Archive, ArrowRight, BriefcaseBusiness, Check, CircleAlert, Clock3, Code2, Copy, FilePlus2, LogOut, Plus, ShieldCheck, Users, X } from "lucide-react";
+import { Archive, ArrowRight, Bell, BriefcaseBusiness, Check, CircleAlert, Clock3, Code2, Copy, FilePlus2, LogOut, Plus, ShieldCheck, Users, X } from "lucide-react";
 import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, Assessment, Attempt, clearAuth, getUser, JobApplication, JobOpening, Report, saveAuth, SubmissionStatus, User } from "./api";
 
@@ -145,6 +145,7 @@ function RecruiterHome() {
   const [showArchived, setShowArchived] = useState(false);
   const loadSequence = useRef(0);
   const [jobOpenings, setJobOpenings] = useState<JobOpening[]>([]);
+  const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [jobOpeningsLoading, setJobOpeningsLoading] = useState(true);
   const [jobOpeningsError, setJobOpeningsError] = useState("");
   const [jobOpeningsNotice, setJobOpeningsNotice] = useState("");
@@ -211,8 +212,8 @@ function RecruiterHome() {
   const updateJobStatus = async (job: JobOpening, action: "publish" | "close") => {
     setPendingJobAction({ id: job.id, action }); setJobOpeningsError(""); setJobOpeningsNotice("");
     try {
-      await api<JobOpening>(`/jobs/${job.id}/${action}`, { method: "POST" });
-      await loadJobOpenings(false);
+      const updated = await api<JobOpening>(`/jobs/${job.id}/${action}`, { method: "POST" });
+      setJobOpenings(current => current.map(item => item.id === updated.id ? updated : item));
       setJobOpeningsNotice(`Job vacancy "${job.title}" was ${action === "publish" ? "published" : "closed"}.`);
     } catch (caught) {
       setJobOpeningsError(caught instanceof Error ? caught.message : `Could not ${action} job vacancy.`);
@@ -270,18 +271,25 @@ function RecruiterHome() {
   });
   const published = assessments.filter(item => item.is_published).length;
   const showAssessmentEmpty = !loading && assessments.length === 0 && !error;
+  const archivedJobs = jobOpenings.filter(job => job.status === "closed");
+  const activeJobs = jobOpenings.filter(job => job.status === "draft" || job.status === "published");
+  const visibleJobs = showArchivedJobs ? archivedJobs : activeJobs;
   return <Shell user={getUser()}><div className="page-heading"><div><span className="eyebrow">Recruiter workspace</span><h1>Good work starts with a fair assessment.</h1><p>Build coding assessments, invite candidates, and compare evidence.</p></div>{!showArchived && <button className="button primary" onClick={() => setShowCreate(v => !v)}><Plus size={17} />New assessment</button>}</div>
     {error && <ErrorMessage>{error}</ErrorMessage>}{notice && <div className="success-banner" role="status">{notice}</div>}
     {!showArchived && <div className="stats-grid"><div className="stat-card"><div className="stat-icon blue"><FilePlus2 size={18} /></div><span>Active assessments</span><b>{assessments.length}</b><small>Across your organization</small></div><div className="stat-card"><div className="stat-icon green"><Check size={18} /></div><span>Published</span><b>{published}</b><small>Ready for candidates</small></div><div className="stat-card"><div className="stat-icon violet"><Users size={18} /></div><span>Assessment format</span><b>Python</b><small>Software engineering roles</small></div></div>}
     {!showArchived && showCreate && <section className="panel create-panel"><div className="section-title"><div><span className="eyebrow">New assessment</span><h2>Set up the basics</h2></div><button className="icon-button" aria-label="Close" onClick={() => setShowCreate(false)}><X size={18} /></button></div><form className="form-grid" onSubmit={create}><label>Assessment title<input required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Backend Engineering — Algorithms" /></label><label>Role<select value={role} onChange={e => setRole(e.target.value)}><option>Software Engineer</option><option>Software Engineering Intern</option></select></label><label>Time limit (minutes)<input required type="number" min={5} max={480} value={limit} onChange={e => setLimit(Number(e.target.value))} /></label><label className="span-two">Candidate instructions<textarea maxLength={20000} value={instructions} onChange={e => setInstructions(e.target.value)} placeholder="Provide context and rules for the assessment." /></label><div className="span-two form-actions"><button type="button" className="button secondary" onClick={() => setShowCreate(false)}>Cancel</button><button className="button primary" disabled={saving}>{saving ? "Creating…" : "Create draft"}<ArrowRight size={15} /></button></div></form></section>}
     <section className="panel job-vacancies-panel" aria-labelledby="job-vacancies-heading">
       <div className="section-title">
-        <div><span className="eyebrow">Hiring</span><h2 id="job-vacancies-heading">Job Vacancies <span className="count">{jobOpenings.length}</span></h2></div>
-        <button className="button primary" onClick={() => { setShowJobForm(value => !value); setJobOpeningsError(""); }}><Plus size={16} />Create Job Vacancy</button>
+        <div><span className="eyebrow">Hiring</span><h2 id="job-vacancies-heading">Job Vacancies <span className="count">{visibleJobs.length}</span></h2></div>
+        {!showArchivedJobs && <button className="button primary" onClick={() => { setShowJobForm(value => !value); setJobOpeningsError(""); }}><Plus size={16} />Create Job Vacancy</button>}
+      </div>
+      <div className="assessment-view-switch job-vacancy-view-switch" role="group" aria-label="Job vacancy view">
+        <button type="button" className={`button ${showArchivedJobs ? "secondary" : "primary"}`} aria-pressed={!showArchivedJobs} onClick={() => setShowArchivedJobs(false)}>Active</button>
+        <button type="button" className={`button ${showArchivedJobs ? "primary" : "secondary"}`} aria-pressed={showArchivedJobs} onClick={() => { setShowArchivedJobs(true); setShowJobForm(false); }}><Archive size={15} />Archived</button>
       </div>
       {jobOpeningsError && <ErrorMessage>{jobOpeningsError}</ErrorMessage>}
       {jobOpeningsNotice && <div className="success-banner" role="status">{jobOpeningsNotice}</div>}
-      {showJobForm && <form className="form-grid job-vacancy-form" onSubmit={createJobOpening} noValidate>
+      {!showArchivedJobs && showJobForm && <form className="form-grid job-vacancy-form" onSubmit={createJobOpening} noValidate>
         <label>Job Title<input required maxLength={200} value={jobTitle} onChange={event => setJobTitle(event.target.value)} placeholder="e.g. Software Engineer" /></label>
         <label>Employment Type<select value={jobEmploymentType} onChange={event => setJobEmploymentType(event.target.value as JobOpening["employment_type"])}><option value="internship">Internship</option><option value="full-time">Full-time</option><option value="part-time">Part-time</option></select></label>
         <label>Location<input required maxLength={200} value={jobLocation} onChange={event => setJobLocation(event.target.value)} placeholder="e.g. Remote" /></label>
@@ -291,13 +299,13 @@ function RecruiterHome() {
       </form>}
       {jobOpeningsLoading ? <Busy label="Loading job vacancies…" /> : jobOpeningsError && jobOpenings.length === 0
         ? <div className="empty-state"><h3>Job vacancies could not be loaded.</h3><button className="button secondary" onClick={() => void loadJobOpenings()}>Try again</button></div>
-        : jobOpenings.length === 0
-          ? <div className="empty-state job-vacancies-empty"><h3>No job vacancies yet.</h3><p>Create a vacancy to start hiring for your organization.</p></div>
-          : <div className="job-vacancy-list">{jobOpenings.map(job => <article className="job-vacancy-card" key={job.id}>
+        : visibleJobs.length === 0
+          ? <div className="empty-state job-vacancies-empty">{showArchivedJobs ? <><h3>No archived job vacancies.</h3><p>Closed vacancies appear here.</p></> : <><h3>No active job vacancies.</h3><p>Create a vacancy to start hiring for your organization.</p></>}</div>
+          : <div className="job-vacancy-list">{visibleJobs.map(job => <article className="job-vacancy-card" key={job.id}>
             <div className="job-vacancy-main"><div className="title-line"><h3>{job.title}</h3><span className={`status ${job.status}`}><i />{job.status}</span></div>
               <p>{job.employment_type === "full-time" ? "Full-time" : job.employment_type === "part-time" ? "Part-time" : "Internship"}<span className="dot-sep">·</span>{job.location}<span className="dot-sep">·</span>Created {new Date(job.created_at).toLocaleDateString()}</p>
               <p className="job-vacancy-description">{job.description}</p>
-              <JobRequirementEditor job={job} onSaved={() => loadJobOpenings(false)} />
+              {!showArchivedJobs && <JobRequirementEditor job={job} onSaved={() => loadJobOpenings(false)} />}
             </div>
             <div className="assessment-actions">{job.status === "draft" && <button className="button secondary" disabled={pendingJobAction !== null} onClick={() => void updateJobStatus(job, "publish")}>{pendingJobAction?.id === job.id && pendingJobAction.action === "publish" ? "Publishing…" : "Publish Job"}</button>}{job.status === "published" && <button className="button secondary danger-button" disabled={pendingJobAction !== null} onClick={() => void updateJobStatus(job, "close")}>{pendingJobAction?.id === job.id && pendingJobAction.action === "close" ? "Closing…" : "Close Job"}</button>}</div>
           </article>)}</div>}
@@ -535,7 +543,34 @@ function CandidateHome() {
   const [applicationError, setApplicationError] = useState("");
   const [applicationNotice, setApplicationNotice] = useState("");
   const [applicationSubmitting, setApplicationSubmitting] = useState(false);
+  const [vacancyEmails, setVacancyEmails] = useState<boolean | null>(null);
+  const [vacancyEmailSaving, setVacancyEmailSaving] = useState(false);
+  const vacancyEmailSaveInFlight = useRef(false);
+  const [vacancyEmailError, setVacancyEmailError] = useState("");
   const navigate = useNavigate();
+  const vacancyEmailPath = "/candidate/vacancy-notifications";
+  useEffect(() => {
+    void api<{ enabled: boolean }>(vacancyEmailPath)
+      .then(result => setVacancyEmails(result.enabled))
+      .catch(() => setVacancyEmailError("Could not load vacancy email preferences."));
+  }, []);
+  const toggleVacancyEmails = async () => {
+    if (vacancyEmails === null || vacancyEmailSaveInFlight.current) return;
+    vacancyEmailSaveInFlight.current = true;
+    setVacancyEmailSaving(true);
+    setVacancyEmailError("");
+    try {
+      const preference = await api<{ enabled: boolean }>(vacancyEmailPath, {
+        method: "PUT", body: JSON.stringify({ enabled: !vacancyEmails }),
+      });
+      setVacancyEmails(preference.enabled);
+    } catch {
+      setVacancyEmailError("Could not save your vacancy email preference. Try again.");
+    } finally {
+      vacancyEmailSaveInFlight.current = false;
+      setVacancyEmailSaving(false);
+    }
+  };
   useEffect(() => {
     void Promise.all([
       api<Assessment[]>("/candidate/assessments"),
@@ -646,6 +681,27 @@ function CandidateHome() {
     })}</div>}
     <section className="candidate-jobs-section" aria-labelledby="available-jobs-heading">
       <div className="section-title candidate-jobs-heading"><div><span className="eyebrow">Explore opportunities</span><h2 id="available-jobs-heading">Available Job Vacancies <span className="count">{jobOpenings.length}</span></h2></div></div>
+      <section className="vacancy-alert-card" aria-labelledby="vacancy-alert-title">
+        <span className="vacancy-alert-icon" aria-hidden="true"><Bell size={20} /></span>
+        <div className="vacancy-alert-copy">
+          <h3 id="vacancy-alert-title">Job Vacancy Alerts</h3>
+          <p id="vacancy-alert-description">Get an email when new jobs are posted.</p>
+          <p id="vacancy-alert-status" className="vacancy-alert-status" role="status">
+            {vacancyEmailSaving ? "Saving preference…"
+              : vacancyEmails === null ? vacancyEmailError ? "Preference unavailable" : "Loading preference…"
+                : vacancyEmails ? "Email alerts enabled" : "Email alerts are off"}
+          </p>
+          {vacancyEmailError && <p className="vacancy-alert-error" role="alert">{vacancyEmailError}</p>}
+        </div>
+        <button type="button" role="switch" className="vacancy-alert-switch"
+          aria-labelledby="vacancy-alert-title"
+          aria-describedby="vacancy-alert-description vacancy-alert-status"
+          aria-checked={vacancyEmails === true}
+          aria-disabled={vacancyEmails === null || vacancyEmailSaving}
+          onClick={() => void toggleVacancyEmails()}>
+          <span className="vacancy-alert-track" aria-hidden="true" />
+        </button>
+      </section>
       {jobOpeningsError && <ErrorMessage>{jobOpeningsError}</ErrorMessage>}
       {jobOpeningsLoading
         ? <Busy label="Loading job vacancies…" />
