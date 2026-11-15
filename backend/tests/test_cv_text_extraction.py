@@ -57,6 +57,78 @@ def create_text_pdf(text: str, *, page_count: int = 1, password: str | None = No
     return output.getvalue()
 
 
+def test_pdf_restores_visual_skill_section_without_using_referees():
+    from talentforge.cv_text_extraction import _extract_pdf
+    from talentforge.job_matching import match_job
+    from talentforge.schemas import JobRequirements
+
+    with pymupdf.open() as document:
+        page = document.new_page()
+        for x, y, value in [(70, 120, "Java"), (190, 120, "React"), (70, 145, "SQL"),
+                            (70, 95, "Technical Skills"), (70, 180, "Reference"),
+                            (70, 205, "Skills: Kubernetes, Go")]:
+            page.insert_text((x, y), value)
+        source = _extract_pdf(document.tobytes())
+    assert source.splitlines() == ["Technical Skills", "Java", "React", "SQL", "Reference", "Skills: Kubernetes, Go"]
+    profile = {"skills": ["Kubernetes"]}
+    requirements = JobRequirements(mandatory_skills=["Java,", "React", "SQL"])
+    result = match_job(requirements, "Fictional vacancy", profile, source)
+    assert result["decision"] == "pass"
+    assert result["advisory_calls"] == 0
+    requirements.mandatory_skills.append("Kubernetes")
+    result = match_job(requirements, "Fictional vacancy", profile, source)
+    assert result["decision"] == "fail"
+    assert result["missing_required_skills"] == ["Kubernetes"]
+
+
+@pytest.mark.parametrize("page_count", [1, 3])
+def test_pdf_keeps_skill_rows_with_their_own_column_and_page(page_count):
+    from talentforge.cv_text_extraction import _extract_pdf
+    from talentforge.job_matching import match_job
+    from talentforge.schemas import JobRequirements
+
+    with pymupdf.open() as document:
+        for index in range(page_count - 1):
+            document.new_page().insert_text((55, 55), f"Fictional portfolio page {index + 1}")
+        page = document.new_page()
+        # Write neighbouring headings together, then alternate content across
+        # columns in the PDF stream. A named reference must stay separate.
+        for x, y, value in [
+            (55, 55, "Technical Competencies"), (225, 55, "References"),
+            (225, 80, "Skills: Terraform"), (55, 100, "Programming"),
+            (155, 100, "Java, Python"), (55, 125, "Databases"), (155, 125, "PostgreSQL"),
+            (55, 170, "Education"), (55, 190, "Fictional university"),
+        ]:
+            page.insert_text((x, y), value)
+        source = _extract_pdf(document.tobytes())
+
+    assert [line for line in source.splitlines() if line] == [
+        *(f"Fictional portfolio page {index + 1}" for index in range(page_count - 1)),
+        "Technical Competencies", "Programming", "Java, Python", "Databases", "PostgreSQL",
+        "References", "Skills: Terraform", "Education", "Fictional university",
+    ]
+    requirements = JobRequirements(mandatory_skills=["Java", "Python", "Postgres"])
+    result = match_job(requirements, "Fictional vacancy", {}, source)
+    assert result["decision"] == "pass" and result["advisory_calls"] == 0
+    requirements.mandatory_skills.append("Terraform")
+    assert match_job(requirements, "Fictional vacancy", {}, source)["missing_required_skills"] == ["Terraform"]
+
+
+def test_pdf_recovers_one_detached_inline_skill_row():
+    from talentforge.cv_text_extraction import _extract_pdf
+
+    with pymupdf.open() as document:
+        page = document.new_page()
+        for y, value in [
+            (103, "Java, SQL"), (70, "Technology Stack"),
+            (131, "Experience"), (151, "Fictional role"),
+        ]:
+            page.insert_text((55, y), value)
+        source = _extract_pdf(document.tobytes())
+
+    assert source.splitlines() == ["Technology Stack", "Java, SQL", "Experience", "Fictional role"]
+
+
 def create_image_pdf() -> bytes:
     image = pymupdf.Pixmap(pymupdf.csRGB, (0, 0, 2, 2), 0)
     image.clear_with(255)

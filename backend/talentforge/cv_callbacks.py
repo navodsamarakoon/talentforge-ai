@@ -213,7 +213,7 @@ def record_envelope_failure(application_id: UUID, body: EnvelopeFailure, db: Db)
 
 
 @router.post("/integrations/n8n/applications/{application_id}/decision", dependencies=[Depends(authenticate)])
-def decide(application_id: UUID, body: Decision, db: Db):
+def decide(application_id: UUID, body: Decision, db: Db, acknowledge_unresolved: bool = False):
     # Preserve stable per-job duplicate precedence regardless of callback order.
     app = db.get(JobApplication, str(application_id))
     if not app:
@@ -262,6 +262,8 @@ def decide(application_id: UUID, body: Decision, db: Db):
                     "job_match application_id=%s requirement_ids=none failure_code=%s elapsed_ms=%.2f exception_type=%s",
                     app.id, item.error_code, (perf_counter() - started) * 1000, type(error).__name__)
                 db.commit()
+                if acknowledge_unresolved:
+                    return {"status": "screening", "recoverable_error": item.error_code}
                 raise HTTPException(409, {"code": item.error_code,
                                           "message": "Vacancy has no mandatory requirements configured. A recruiter must configure them before matching."}) from None
             except (ScreeningFailure, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
@@ -273,6 +275,8 @@ def decide(application_id: UUID, body: Decision, db: Db):
                     "job_match application_id=%s requirement_ids=unknown failure_code=%s elapsed_ms=%.2f exception_type=%s",
                     app.id, failure_code, (perf_counter() - started) * 1000, type(error).__name__)
                 db.commit()
+                if acknowledge_unresolved and failure_code != "job_matching_internal_error":
+                    return {"status": "screening", "recoverable_error": failure_code}
                 raise HTTPException(409 if failure_code != "job_matching_internal_error" else 503,
                                     {"code": failure_code, "message": "Job matching could not be verified."}) from None
             item.match_result = {
@@ -283,6 +287,8 @@ def decide(application_id: UUID, body: Decision, db: Db):
                 item.error_code = "job_matching_unresolved"
                 db.commit()
                 failure_code = result["failure_code"]
+                if acknowledge_unresolved:
+                    return {"status": "screening", "recoverable_error": failure_code}
                 status = 503 if failure_code in {"advisory_timeout", "advisory_unavailable"} else 409
                 raise HTTPException(status, {"code": failure_code, "message": result["reason"]})
             if item.error_code in {"job_matching_unresolved", "job_matching_requirements_missing"}:
@@ -349,10 +355,13 @@ def retry_screening(application_id: UUID, background_tasks: BackgroundTasks, db:
     if item and not durable and (item.generation_token or "").startswith(QUEUE_PREFIX):
         raise HTTPException(503, "The CV queue is unavailable. Please try again later.")
     previous_error = item.error_code if item else None
-    if not item or not queue_retry(db,item):
-        raise HTTPException(409,"Screening cannot be automatically retried; operator review is required.")
+    was_claimed = bool(item and item.workflow_claimed_at)
+    if was_claimed and not get_settings().n8n_auto_dispatch_enabled:
+        raise HTTPException(503, "CV screening dispatch is unavailable. Please try again later.")
+    if not item or not queue_retry(db,item,actor_id=candidate.id):
+        raise HTTPException(409,"Screening is not eligible for another retry; operator review is required.")
     if durable:
-        if previous_error:
+        if previous_error and not was_claimed:
             db.add(AuditEvent(action=f"cv_retry_after_{previous_error}",
                               entity_type="cv_screening", entity_id=item.application_id))
         item.generation_token = QUEUE_PENDING

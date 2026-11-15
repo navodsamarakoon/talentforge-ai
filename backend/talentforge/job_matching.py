@@ -26,11 +26,16 @@ def contains_fact(source: str, fact: str) -> bool:
 
 
 def materially_identical(left: str, right: str) -> bool:
-    def fingerprint(text: str) -> str:
+    def body_lines(text: str) -> list[str]:
         lines = text.strip().splitlines()
-        return normalize(re.sub(r"\S+@\S+", "", "\n".join(lines[1:])))
-    a, b = fingerprint(left), fingerprint(right)
-    return len(a) >= 240 and a == b
+        return [normalized for line in lines[1:]
+                if (normalized := normalize(re.sub(r"\S+@\S+", "", line)))]
+
+    a, b = body_lines(left), body_lines(right)
+    flat = " ".join(a)
+    # A coordinate-aware PDF repair can relocate intact rows. Whole-line
+    # multiplicity must still agree to match a body in a different order.
+    return len(flat) >= 240 and (flat == " ".join(b) or sorted(a) == sorted(b))
 
 
 class RequirementAssessment(BaseModel):
@@ -55,21 +60,39 @@ _SKILL_ALIASES = (
     {"javascript", "js"}, {"typescript", "ts"}, {"postgresql", "postgres"},
     {"react", "react.js", "reactjs"}, {"node.js", "nodejs"}, {"express.js", "expressjs"},
 )
-_NEGATION = re.compile(r"\b(?:no|not|never|without|learn(?:ing)?|planned|interested|aspiring|beginner|unfamiliar)\b")
-_SKILL_LABEL = re.compile(r"^(?P<label>[a-z][a-z &/-]{0,47}):\s*")
+_LEARNING_QUALIFIER = r"(?<!machine )(?<!deep )(?<!reinforcement )(?<!scikit-)learn(?:ing)?"
+_NEGATION = re.compile(rf"\b(?:no|not|never|without|{_LEARNING_QUALIFIER}|planned|interested|aspiring|beginner|unfamiliar)\b")
+_SKILL_LABEL = re.compile(r"^(?P<label>[a-z][a-z &/-]{0,47}?)(?:\s*:\s*|\s+[\u2013\u2014-]\s+)")
 _NON_EVIDENCE_LABEL = re.compile(
     r"\b(?:required|requirements?|desired|wanted|target|goals?|future|familiarity|exposure|"
-    r"preferred|optional|seeking|studying|exploring|lack|avoid|should|must)\b"
+    r"preferred|optional|seeking|studying|exploring|lack|avoid|should|must|"
+    r"references?|referees|employer|company|vacancy|responsibilities)\b"
 )
 _EVIDENCE_LABEL = re.compile(r"\b(?:skills|tools|technologies|stack|languages|frameworks|libraries|databases?)\b")
-_OPEN_QUALIFIER = re.compile(r"\b(?:no experience with|not familiar with|interested in|learning|without)\s*:?$")
+_OPEN_QUALIFIER = re.compile(rf"\b(?:no experience with|not familiar with|interested in|{_LEARNING_QUALIFIER}|without)\s*:?$")
 _USE = re.compile(r"\b(?:using|built with|written in|developed in|implemented in|coded in|programmed in|worked with)\b")
-_SKILL_SEPARATOR = re.compile(r"(?:[,;|•]|\s+(?:and|&)\s+|\s+/\s+)(?![^()]*\))")
+_SKILL_SEPARATOR = re.compile(r"(?:[,;|\u2022\u25aa\u25cf\u25e6]|\s+(?:and|&)\s+|\s+/\s+)(?![^()]*\))")
+_LEADING_BULLET = re.compile(r"^(?:[\u2022\u25aa\u25cf\u25e6]\s*|[-*\u2013\u2014]\s+)")
+_REFERENCE_HEADING = re.compile(r"^(?:(?:professional|personal|academic) )?(?:references?|referees?)\s*(?::.*|[\u2013\u2014-])?$")
+_SECTION = re.compile(r"^(?:(?:technical|core|academic|personal|professional|work) )?"
+                      r"(?:skills|education|projects|experience|certifications|qualifications|interests|summary)\s*[:–—-]?$")
+_SKILLS_HEADING = re.compile(
+    r"^(?:(?:technical|core|professional|computer) skills|skills(?: (?:&|and) (?:expertise|competencies|technologies))?|"
+    r"technical (?:proficiency|competencies|expertise|toolkit)|programming languages|languages|"
+    r"(?:project )?(?:tech|technology) stack|technologies|tools|databases?(?: & tools)?|"
+    r"frameworks(?: (?:&|and) (?:tools|libraries))?|libraries)\s*[:\u2013\u2014-]?$"
+)
+_SKILL_CELL = re.compile(r"[\w+#][\w.+#/& -]{0,59}$")
+_BULLET_CATEGORY = re.compile(r"^(?:programming(?: languages)?|machine learning(?: frameworks)?|"
+                              r"deep learning(?: frameworks)?|software engineering|databases?|"
+                              r"frameworks(?: & tools)?|libraries|devops(?: tools)?)\s+")
+_NON_CANDIDATE_SECTION = re.compile(r"^(?:job (?:description|requirements)|(?:desired|required|preferred) skills|"
+                                    r"requirements|career (?:objective|goals)|references?|referees)\s*[:\u2013\u2014-]?$")
 
 
 def _listed_skills(value, *, require_label=False):
-    bulleted = value.startswith(("•", "- ", "* "))
-    value = value.lstrip("•*- ").strip()
+    bulleted = bool(_LEADING_BULLET.match(value))
+    value = _LEADING_BULLET.sub("", value).strip()
     heading = _SKILL_LABEL.match(value)
     if heading:
         label = heading["label"]
@@ -79,11 +102,14 @@ def _listed_skills(value, *, require_label=False):
             return set()
         value = value[heading.end():]
     elif require_label:
-        return set()
+        label, pipe, remainder = value.partition("|")
+        if not pipe or not _SKILLS_HEADING.fullmatch(label.strip()):
+            return set()
+        value = remainder.strip()
     if len(value) > 2000 or value.count("(") != value.count(")"):
         return set()
     parts = _SKILL_SEPARATOR.split(value)
-    if len(parts) > 50 or (require_label and len(parts) < 2):
+    if len(parts) > 50:
         return set()
     verified = set()
     for part in parts:
@@ -100,6 +126,56 @@ def _listed_skills(value, *, require_label=False):
     return verified
 
 
+def _explicit_skill_sources(lines):
+    """Index exact list cells by original CV line, independent of any model facts."""
+    heading = None
+    blocked = False
+    previous = ""
+    sources = {}
+    for index, line in enumerate(lines, 1):
+        body = _LEADING_BULLET.sub("", line)
+        if not body:
+            continue
+        qualified = bool(_OPEN_QUALIFIER.search(previous) or _qualified_from_previous_line(lines, index - 1))
+        previous = body
+        if _NON_CANDIDATE_SECTION.fullmatch(body):
+            heading, blocked = None, True
+            continue
+        if _SECTION.fullmatch(body):
+            blocked = qualified or (blocked and bool(_SKILLS_HEADING.fullmatch(body)))
+            heading = index if _SKILLS_HEADING.fullmatch(body) and not blocked else None
+            continue
+        if qualified:
+            heading, blocked = None, True
+            continue
+        if blocked:
+            continue
+        if _SKILLS_HEADING.fullmatch(body):
+            heading = index
+            continue
+        if _NEGATION.search(body) or _NON_EVIDENCE_LABEL.search(body):
+            heading = None
+        # PDF tables can leave blank rows after headings. Bound the context and
+        # never borrow a context from an unrecognized prose heading or qualifier.
+        in_list = heading is not None and index - heading <= 32
+        inline = _listed_skills(line, require_label=True)
+        cells = inline
+        if in_list and not inline:
+            category = _BULLET_CATEGORY.match(body) if _LEADING_BULLET.match(line) else None
+            # A formatted skills bullet can use a category without punctuation.
+            # Strip it only inside a skills section and before a delimited list.
+            if category and len(_SKILL_SEPARATOR.split(body[category.end():])) >= 2:
+                cells = _listed_skills(body[category.end():])
+            else:
+                cells = _listed_skills(line)
+        for cell in cells:
+            if _SKILL_CELL.fullmatch(cell) and len(cell.split()) <= 6:
+                sources.setdefault(cell, index)
+        if body and in_list and not cells:
+            heading = None
+    return sources
+
+
 def _qualified_from_previous_line(lines, index):
     if index == 0:
         return False
@@ -110,7 +186,7 @@ def _qualified_from_previous_line(lines, index):
 
 
 def _skill_terms(skill):
-    term = normalize(skill)
+    term = normalize(skill).rstrip(",;").rstrip() or normalize(skill)
     return next((aliases for aliases in _SKILL_ALIASES if term in aliases), {term})
 
 
@@ -156,6 +232,8 @@ def _facts(profile, source_lines):
                                           + r"(?![\w+#])", source):
                 first = bisect_right(starts, occurrence.start())
                 last = bisect_right(starts, occurrence.end() - 1)
+                if not all(source_lines[first - 1:last]):
+                    continue
                 line_ids.update(range(first, last + 1))
                 if field in {"skills", "experience", "projects"} and not _qualified_from_previous_line(
                     source_lines, first - 1
@@ -224,13 +302,17 @@ def match_job(requirements: JobRequirements, description: str, profile: dict, te
               *, application_id: str | None = None) -> dict:
     started = perf_counter()
     source_lines = [normalize(line) for line in text.splitlines()]
+    in_non_candidate_section = False
+    for index, line in enumerate(source_lines):
+        body = _LEADING_BULLET.sub("", line)
+        if _REFERENCE_HEADING.fullmatch(body) or _NON_CANDIDATE_SECTION.fullmatch(body):
+            in_non_candidate_section = True
+        elif _SECTION.fullmatch(body) and not _SKILLS_HEADING.fullmatch(body):
+            in_non_candidate_section = False
+        if in_non_candidate_section:
+            source_lines[index] = ""
     facts = _facts(profile, source_lines)
-    listed_sources = {}
-    for index, line in enumerate(source_lines, 1):
-        if _qualified_from_previous_line(source_lines, index - 1):
-            continue
-        for token in _listed_skills(line, require_label=True):
-            listed_sources.setdefault(token, index)
+    listed_sources = _explicit_skill_sources(source_lines)
     rejected = profile.get("source_evidence", {}).get("skills", {}).get("rejected_skill_fingerprints")
 
     checks = []
@@ -257,15 +339,14 @@ def match_job(requirements: JobRequirements, description: str, profile: dict, te
                     evidence_code = "grounding_rejection"
                 else:
                     evidence_code = "model_extraction_omission"
-                if mandatory:
-                    for term in sorted(terms & listed_sources.keys()):
-                        source_id = len(facts)
-                        fact = dict(id=source_id, field="skills", text=term, origin="explicit_source_list",
-                                    source_lines=[listed_sources[term]], source_skill_tokens=[term],
-                                    negative_context=False)
-                        facts.append(fact)
-                        relevant.append(fact)
-                        support.append(source_id)
+                for term in sorted(terms & listed_sources.keys()):
+                    source_id = len(facts)
+                    fact = dict(id=source_id, field="skills", text=term, origin="explicit_source_list",
+                                source_lines=[listed_sources[term]], source_skill_tokens=[term],
+                                negative_context=False)
+                    facts.append(fact)
+                    relevant.append(fact)
+                    support.append(source_id)
             status = True if support else "uncertain" if ambiguous else False
             if status is True:
                 matched.append(skill)
@@ -275,7 +356,7 @@ def match_job(requirements: JobRequirements, description: str, profile: dict, te
                                matched=status, evidence_source_ids=support,
                                candidate_sources=[fact["id"] for fact in relevant], evidence_code=evidence_code))
 
-    if not facts:
+    if not facts and not listed_sources:
         raise ScreeningFailure("insufficient_cv_evidence")
 
     qualifications = {}
@@ -366,6 +447,6 @@ def match_job(requirements: JobRequirements, description: str, profile: dict, te
         },
         "reason": reason, "evidence": [fact["text"] for fact in facts if fact["id"] in support_ids],
         "requirements": checks, "sources": facts, "semantic_review": review,
-        "model": "llama3.2:3b" if advisory_calls else None, "matcher_version": 3,
+        "model": "llama3.2:3b" if advisory_calls else None, "matcher_version": 4,
         "failure_code": failure_code, "elapsed_ms": elapsed_ms, "advisory_calls": advisory_calls,
     }

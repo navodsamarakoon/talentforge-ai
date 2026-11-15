@@ -40,7 +40,7 @@ export function nativeTransforms(workflow) {
  }
  const map=w.nodes.find(n=>n.name==='Map Validate Classification');
  const classify=w.nodes.find(n=>n.name==='Classify CV');
- const guidance='Return only 1 to 3 of the strongest source evidence IDs. Do not enumerate the CV lines.';
+ const guidance='Return exactly one integer in evidence. For clean, use the strongest ID from professional_evidence_ids. Never enumerate the CV lines.';
  if(!classify.parameters.options.systemMessage.includes(guidance)) classify.parameters.options.systemMessage+='\n'+guidance;
  const gateName='Classification Valid';
  const failureName='Record Classification Failure';

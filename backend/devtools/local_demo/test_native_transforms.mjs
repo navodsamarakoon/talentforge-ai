@@ -40,14 +40,20 @@ const linkedLookup=name=>{
  assert.equal(name,'Security Pre-Check');
  return {item:{json:linkedPre}};
 };
-for(const output of [JSON.stringify(modelResult),undefined,null,'null','{broken',modelResult,JSON.stringify({...modelResult,evidence:[999]})]){
+const verifiedFirst=[1,...modelResult.evidence.filter(id=>id!==1)];
+for(const output of [JSON.stringify(modelResult),undefined,null,'null','{broken',modelResult,JSON.stringify({...modelResult,evidence:[999]}),
+ JSON.stringify({...modelResult,evidence:[...verifiedFirst.slice(0,-1),1]}),
+ JSON.stringify({...modelResult,evidence:[...verifiedFirst.slice(0,-1),999]}),
+ JSON.stringify({...modelResult,evidence:verifiedFirst,category:'spam',spam_suspected:true})]){
  const result=JSON.parse(evaluate(classificationExpression,{output},linkedLookup,{}));
  assert.deepEqual(result.__demo_rows,[{failure_code:'workflow_classification_failed'}]);
  checks++;
 }
-assert.deepEqual(JSON.parse(evaluate(classificationExpression,{output:JSON.stringify({...modelResult,evidence:[1]})},linkedLookup,{})).__demo_rows,
- [{classification:'clean',evidence:['Skills: Python']}]);
-checks++;
+for(const evidence of [[1],verifiedFirst]){
+ assert.deepEqual(JSON.parse(evaluate(classificationExpression,{output:JSON.stringify({...modelResult,evidence})},linkedLookup,{})).__demo_rows,
+  [{classification:'clean',evidence:['Skills: Python']}]);
+ checks++;
+}
 for(const status of ['selected','rejected','unknown'])compare('Check Final Decision',{status,reason_code:'selected'});
 for(const value of [candidate,{...candidate,should_send:false},{...candidate,candidate_email:''}])compare('Prepare Candidate Email',value);
 for(const value of [{accepted:['synthetic@example.com'],rejected:[],messageId:'x',response:'250 OK'},{error:'Disconnected'},{accepted:[],rejected:['synthetic@example.com']}])compare('Validate SMTP Outcome',value);

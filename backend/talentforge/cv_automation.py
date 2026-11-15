@@ -24,6 +24,10 @@ from talentforge.models import AuditEvent, CVScreening, JobApplication, JobOpeni
 
 QUEUE_PENDING = "q:pending"
 QUEUE_PREFIX = "q:"
+_CLAIMED_RETRY_EVENTS = {
+    "workflow_classification_failed": ("failed", "cv_retry_after_classification_failure"),
+    "job_matching_unresolved": ("accepted", "cv_retry_after_unresolved_matching"),
+}
 
 
 def queue_has_capacity(db):
@@ -177,7 +181,7 @@ def payload(db, item):
         "cv_sha256": app.cv_sha256, "cv_text": item.cv_text,
         "screening_text": item.cv_text, "cv_profile": item.profile,
         "extraction_status": "success", "original_filename": app.original_cv_filename,
-        "idempotency_key": "cv-screening:" + app.id,
+        "idempotency_key": f"cv-screening:{app.id}:{item.dispatch_id}",
     }
 
 
@@ -268,6 +272,8 @@ async def process_application(application_id: str, session_factory=None, *, dura
         pass
     with factory() as db:
         item = db.scalar(select(CVScreening).where(CVScreening.application_id == application_id).with_for_update())
+        if not item or item.dispatch_id != body["dispatch_id"]:
+            return  # An acknowledgement from an older dispatch cannot update a retry.
         awaiting_ack = item.state == "dispatching"
         if awaiting_ack:
             item.state = "accepted" if accepted else "unknown"
@@ -280,14 +286,34 @@ async def process_application(application_id: str, session_factory=None, *, dura
             db.commit()
 
 
-def queue_retry(db, item):
-    """Only before handoff; an expired model task is fenced by a new token."""
+def queue_retry(db, item, *, actor_id=None):
+    """Queue an explicit retry while holding the screening row lock."""
     now = utcnow()
     lease = item.lease_until
     if lease and lease.tzinfo is None:
         lease = lease.replace(tzinfo=timezone.utc)
     if item.dispatch_started_at or item.workflow_claimed_at:
-        return False
+        failed = _CLAIMED_RETRY_EVENTS.get(item.error_code)
+        if (
+            not failed or not actor_id or not item.dispatch_started_at or not item.workflow_claimed_at
+            or item.state != failed[0] or item.extraction_attempts >= 3
+            or item.decision is not None or item.notification_state is not None or item.summary_id is not None
+        ):
+            return False
+        application = db.get(JobApplication, item.application_id)
+        if application is None or application.status != "screening" or application.candidate_user_id != actor_id:
+            return False
+        if db.scalar(select(AuditEvent.id).where(
+            AuditEvent.entity_type == "cv_screening", AuditEvent.entity_id == item.application_id,
+            AuditEvent.action.in_([action for _, action in _CLAIMED_RETRY_EVENTS.values()]),
+        ).limit(1)):
+            return False
+        db.add(AuditEvent(action=failed[1], actor_id=actor_id,
+                          entity_type="cv_screening", entity_id=item.application_id))
+        item.dispatch_id = str(uuid4())
+        item.dispatch_started_at = item.workflow_claimed_at = None
+        item.state, item.generation_token, item.lease_until, item.error_code = "queued", None, None, None
+        return True
     if item.state == "ready":
         return True
     if item.extraction_attempts >= 3 or item.state not in {"failed", "queued", "extracting"} or (item.state == "extracting" and lease and lease > now):

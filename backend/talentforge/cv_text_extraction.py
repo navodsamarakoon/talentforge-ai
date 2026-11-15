@@ -35,6 +35,19 @@ MAX_EXTRACTED_CHARACTERS = 500_000
 _STORAGE_REFERENCE = re.compile(r"^[0-9a-f]{32}\.(pdf|docx)$")
 _HORIZONTAL_WHITESPACE = re.compile(r"[^\S\r\n]+")
 _EXCESSIVE_LINE_BREAKS = re.compile(r"\n{3,}")
+_PDF_SKILL_HEADINGS = {
+    "skills", "technical skills", "core skills", "technical proficiency",
+    "technical competencies", "technology stack", "programming languages",
+    "technologies",
+}
+_PDF_SECTION_HEADINGS = _PDF_SKILL_HEADINGS | {
+    "education", "academic background", "projects", "project experience",
+    "personal projects", "academic projects", "research projects", "experience",
+    "work experience", "professional experience", "employment history",
+    "certifications", "reference", "references", "referees",
+    "professional references", "interests", "qualifications", "languages",
+    "awards", "summary", "contact", "achievements",
+}
 
 
 @dataclass(frozen=True)
@@ -109,6 +122,73 @@ def _read_private_cv(storage_ref: str) -> tuple[bytes, CVFileType]:
     return content, file_type
 
 
+def _pdf_page_text(page) -> str:
+    """Rejoin bounded skills sections whose PDF stream interleaves columns."""
+    source = page.get_text("text")
+    source_lines = [line for line in source.splitlines() if line.strip()]
+    if len(source_lines) > 2048 or not any(
+        _pdf_heading(line) in _PDF_SKILL_HEADINGS for line in source_lines
+    ):
+        return source
+
+    # A PyMuPDF block can contain adjacent columns. Work at the line level and
+    # use geometry only if it maps exactly onto the original extracted lines.
+    lines = [
+        line for block in page.get_text("dict", flags=pymupdf.TEXTFLAGS_TEXT)["blocks"]
+        for line in block.get("lines", ())
+        if any(span["text"].strip() for span in line["spans"])
+    ]
+    if ["".join(span["text"] for span in line["spans"]).strip() for line in lines] != [
+        line.strip() for line in source_lines
+    ]:
+        return source
+    headings = {
+        index: label for index, value in enumerate(source_lines)
+        if (label := _pdf_heading(value)) in _PDF_SECTION_HEADINGS
+    }
+    if len(headings) > 32:
+        return source
+
+    sections = {}
+    moved = set()
+    for index, label in headings.items():
+        if label not in _PDF_SKILL_HEADINGS or lines[index]["dir"] != (1.0, 0.0):
+            continue
+        x0, _, _, y1 = lines[index]["bbox"]
+        boxes = [lines[other]["bbox"] for other in headings if other != index]
+        bottom = min((box[1] for box in boxes if box[1] >= y1 and abs(box[0] - x0) <= 24), default=None)
+        if bottom is None:
+            continue
+        # Stop at a neighbouring column's explicit heading even when the two
+        # headings have different vertical positions or were emitted together.
+        neighbour = min((box[0] - 4 for box in boxes if box[0] > x0 + 24 and box[1] < bottom),
+                        default=float("inf"))
+        right = min(neighbour, x0 + 180)
+        body = [
+            position for position, line in enumerate(lines)
+            if position not in headings and position not in moved and line["dir"] == (1.0, 0.0)
+            and y1 <= line["bbox"][1] and line["bbox"][3] <= bottom
+            and x0 - 4 <= line["bbox"][0] < right
+            and line["bbox"][2] <= neighbour
+            and len(source_lines[position].strip()) <= 200
+        ]
+        if not body or len(body) > 32:
+            continue
+        ordered = sorted(body, key=lambda position: (lines[position]["bbox"][1], lines[position]["bbox"][0]))
+        if ordered != list(range(index + 1, index + 1 + len(body))):
+            sections[index] = ordered
+            moved.update(body)
+    if not sections:
+        return source
+    ordered = [line_index for index in range(len(lines)) if index not in moved
+               for line_index in (index, *sections.get(index, ()))]
+    return "\n".join(source_lines[index] for index in ordered) + "\n"
+
+
+def _pdf_heading(value: str) -> str:
+    return " ".join(value.strip().rstrip(":–—-").casefold().split())
+
+
 def _extract_pdf(content: bytes) -> str:
     try:
         with pymupdf.open(stream=content, filetype="pdf") as document:
@@ -119,7 +199,7 @@ def _extract_pdf(content: bytes) -> str:
             pages: list[str] = []
             total_characters = 0
             for page in document:
-                page_text = page.get_text("text")
+                page_text = _pdf_page_text(page)
                 if total_characters + len(page_text) > MAX_EXTRACTED_CHARACTERS:
                     raise _ExtractionFailure("text_limit_exceeded")
                 pages.append(page_text)

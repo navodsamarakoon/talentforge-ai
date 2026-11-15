@@ -249,6 +249,74 @@ def test_workflow_claim_decision_notification_and_receipt_are_idempotent(automat
     assert automation.post(base+'/notification/receipt',json={**reference,'outcome':'failed'},headers=auth).status_code==409
 
 
+@pytest.mark.parametrize("required,expected", [("PostgreSQL", "selected"), ("Rust", "rejected")])
+def test_screening_to_notification_with_mock_smtp(automation, monkeypatch, required, expected):
+    from pathlib import Path
+    import shutil
+    import subprocess
+    from unittest.mock import Mock
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to evaluate n8n mapping expressions")
+    mapping_path = Path(__file__).resolve().parents[1] / "devtools/local_demo/native_expression_compat.json"
+    evaluate_script = r"""
+const fs = require('fs');
+const fixture = JSON.parse(fs.readFileSync(0, 'utf8'));
+const map = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'))[fixture.name];
+const body = map.compiled.slice(3, -2).trim();
+const lookup = () => ({first: () => ({json: fixture.linked}), item: {json: fixture.linked}});
+const outcome = new Function('$json', '$', 'return ' + body)(fixture.input, lookup);
+console.log(JSON.stringify(JSON.parse(outcome).__demo_rows));
+"""
+
+    def evaluate(name, value, linked=None):
+        case = json.dumps({"name": name, "input": value, "linked": linked})
+        result = subprocess.run([node, "-e", evaluate_script, str(mapping_path)], input=case,
+                                capture_output=True, text=True, check=True, timeout=10)
+        return json.loads(result.stdout)
+
+    source = "Fictional Candidate\nDatabases\n\nPostgreSQL | SQLite"
+    monkeypatch.setattr(cv, "extract_cv_text_sandboxed", lambda _: SimpleNamespace(
+        extraction_status="success", error_code=None, text=source))
+    mocks(monkeypatch)
+    application_id, _, job = upload(automation)
+    with SessionLocal() as db:
+        db.get(JobOpening, job["id"]).requirements = {"mandatory_skills": [required]}
+        ref = {"dispatch_id": db.get(CVScreening, application_id).dispatch_id}
+        db.commit()
+    base = f"/api/integrations/n8n/applications/{application_id}"
+    auth = {"X-TalentForge-Callback-Secret": "synthetic-callback"}
+
+    def callback(path, payload):
+        response = automation.post(base + path, json={**ref, **payload}, headers=auth)
+        assert response.status_code == 200
+        return response.json()
+
+    claim = callback("/screening/claim", {})
+    pre, = evaluate("Map Security Pre-Check", claim, {"cv_text": source})
+    result = json.dumps({"category": "clean", "spam_suspected": False, "reason": "Synthetic CV",
+                         "evidence": pre["professional_evidence_ids"][:1]})
+    classification, = evaluate("Map Validate Classification", {"output": result}, pre)
+    decision = callback("/decision", {"classification": classification["classification"]})
+    assert decision["status"] == expected
+    assert decision["reason_code"] == ("selected" if expected == "selected" else "job_mismatch")
+    assert evaluate("Map Check Final Decision", decision) == [decision]
+    message, = evaluate("Map Prepare Candidate Email", callback("/notification/claim", {}))
+    smtp = Mock(return_value={"accepted": [message["candidate_email"]], "rejected": [],
+                              "messageId": "mock-smtp", "response": "250 OK"})
+    acceptance = smtp(message["candidate_email"], message["subject"], message["text"])
+    smtp.assert_called_once()
+    assert expected in message["subject"]
+    receipt, = evaluate("Map Validate SMTP Outcome", acceptance, message)
+    assert receipt == {"outcome": "sent"}
+    callback("/notification/receipt", receipt)
+    assert evaluate("Map Prepare Candidate Email", callback("/notification/claim", {})) == []
+    with SessionLocal() as db:
+        assert db.get(JobApplication, application_id).status == expected
+        assert db.get(CVScreening, application_id).notification_state == "sent"
+
+
 def test_other_candidate_cannot_read_or_retry_screening(automation,monkeypatch):
     mocks(monkeypatch);app_id,_,_=upload(automation)
     other=candidate_auth(automation,'other@example.com')
@@ -297,6 +365,10 @@ def test_matching_decision(automation, monkeypatch, mode, expected):
         assert response.json()["detail"]["code"] == (
             "advisory_unavailable" if mode == "unavailable" else "advisory_invalid_response"
         )
+        acknowledged = automation.post(base + "/decision?acknowledge_unresolved=true", json=body, headers=auth)
+        assert acknowledged.status_code == 200
+        assert acknowledged.json() == {"status": "screening", "recoverable_error": response.json()["detail"]["code"]}
+        assert automation.post(base + "/notification/claim", json=reference, headers=auth).status_code == 409
     else:
         assert response.json()["reason_code"] == expected
         assert automation.post(base + "/decision", json=body, headers=auth).json() == response.json()
@@ -445,6 +517,64 @@ def test_wrapped_full_stack_skill_entry_keeps_original_line_references():
     assert result["matched_skills"] == requirements.mandatory_skills
     assert result["sources"][0]["source_lines"] == [1, 2]
     assert result["advisory_calls"] == 0
+
+
+def test_near_duplicate_does_not_depend_on_reordered_pdf_rows():
+    from talentforge.job_matching import materially_identical
+
+    rows = [f"Project {index}: developed and maintained a synthetic data processing service."
+            for index in range(5)]
+    first = "Fictional Candidate\n" + "\n".join(rows)
+    second = "Fictional Candidate\n" + "\n".join(reversed(rows))
+    assert materially_identical(first, second)
+    assert not materially_identical(first, second.replace(rows[0], rows[1]))
+
+
+@pytest.mark.parametrize("source,expected_line", [
+    ("Technical Proficiency\nDatabases\n\nMySQL, PostgreSQL, Redis", 4),
+    ("Programming Languages | Python\nDatabases | PostgreSQL | SQLite", 2),
+    ("Projects\nFictional dashboard\nProject Tech Stack \u2014 Flask | PostgreSQL", 3),
+    ("Frameworks & Tools\n\u25aa PostgreSQL", 2),
+    ("Tools: PostgreSQL", 1),
+    ("Technical Skills\n\u2022 Databases PostgreSQL, Redis", 2),
+    ("Technical Skills\n\u2022 Programming Python, SQL\n\u2022 Machine Learning TensorFlow, Keras\nDatabases\nPostgreSQL", 5),
+])
+def test_explicit_cv_skill_layouts_do_not_depend_on_profile_or_model(source, expected_line):
+    from talentforge.job_matching import match_job
+    from talentforge.schemas import JobRequirements
+
+    result = match_job(JobRequirements(mandatory_skills=["Postgres"]), "", {}, source)
+    assert result["decision"] == "pass" and result["advisory_calls"] == 0
+    source_id, = result["requirements"][0]["evidence_source_ids"]
+    assert result["sources"][source_id]["source_lines"] == [expected_line]
+
+
+@pytest.mark.parametrize("source", [
+    "References: fictional referee\nTechnical Skills\nDatabases\nPostgreSQL",
+    "Job Requirements\nDatabases\nPostgreSQL",
+    "No experience with\n\nDatabases\nPostgreSQL",
+    "Databases\n\nPostgreSQL (Learning), MySQL",
+    "Databases\n\nSQL | MySQL | PostgreSQL-compatible",
+    "Company: PostgreSQL",
+    "Education\n\u2022 Databases PostgreSQL, Redis",
+])
+def test_source_index_does_not_promote_reference_requirement_or_qualified_terms(source):
+    from talentforge.job_matching import match_job
+    from talentforge.schemas import JobRequirements
+
+    result = match_job(JobRequirements(mandatory_skills=["PostgreSQL"]), "",
+                       {"skills": ["Python"]}, "Skills: Python\n" + source)
+    assert result["decision"] != "pass"
+    assert result["requirements"][0]["evidence_source_ids"] == []
+
+
+def test_skills_category_with_learning_in_its_name_is_not_a_learning_qualifier():
+    from talentforge.job_matching import match_job
+    from talentforge.schemas import JobRequirements
+
+    requirements = JobRequirements(mandatory_skills=["Keras", "TensorFlow", "Machine Learning", "scikit-learn"])
+    source = "Technical Skills\n• Machine Learning TensorFlow, Keras, scikit-learn\nTools: Machine Learning, SQL"
+    assert match_job(requirements, "", {}, source)["decision"] == "pass"
 
 
 @pytest.mark.parametrize("source,expected", [
@@ -687,4 +817,4 @@ def test_classification_failure_preserves_claim_and_blocks_decision(automation, 
         assert item.state == "failed" and item.error_code == failure["failure_code"]
         assert item.workflow_claimed_at and item.decision is None and item.notification_state is None
     history = automation.get("/api/candidate/applications", headers=candidate_auth).json()
-    assert "needs attention" in history[0]["processing_status"]
+    assert "classification could not be verified" in history[0]["processing_status"]

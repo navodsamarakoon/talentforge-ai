@@ -545,6 +545,8 @@ def list_candidate_job_applications(
                 if notification_state == "failed"
                 else "Job requirements need evidence review. Your application is saved."
                 if error_code == "job_matching_unresolved"
+                else "CV classification could not be verified. Your application is saved."
+                if error_code == "workflow_classification_failed"
                 else "Waiting for the recruiter to configure mandatory job requirements. Your application is saved."
                 if error_code == "job_matching_requirements_missing"
                 else "Workflow delivery could not be confirmed. Your application is saved and requires recovery review."

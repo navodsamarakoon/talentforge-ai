@@ -59,16 +59,19 @@ fence is committed before sending bytes. No HTTP redirects/retries are followed.
 or email delivery. Poll the authenticated candidate status endpoint below if needed.
 
 Safe retry: an authenticated application owner can POST
-`/api/candidate/applications/{application_id}/screening/retry` before any handoff.
-It can resume queued/ready work or a failed/expired model lease, with at most three
-model attempts. GET the same path without `/retry` for state/error code. Live model
-leases are not stolen; expired attempts are fenced by generation tokens. These are
-backend endpoints; the existing form is unchanged and does not yet offer a retry UI.
+`/api/candidate/applications/{application_id}/screening/retry` to resume eligible
+work. The existing budget is three extraction attempts per application. One
+explicit retry after a workflow claim is allowed for a recorded classification
+failure or unresolved matching when no decision, recruiter summary, or email claim
+exists. This retry is audited, reuses the original upload, and starts a new
+dispatch ID. Callbacks and acknowledgements for the prior dispatch are rejected
+or ignored. GET the same path without `/retry` for the state and error code.
+Live extraction leases remain valid until expiry. The existing form has no retry UI.
 
 Background tasks are not a persistent scheduler: a crash can leave queued or
-extracting work. Resume through the safe retry endpoint after reviewing state;
-expired extraction can be retried, but dispatching/unknown/claimed work requires
-manual reconciliation. Never reset these states blindly. After a notification
+extracting work. Use the safe retry endpoint after reviewing the state. Unknown
+handoffs and claimed work outside the two recorded failure cases require manual
+reconciliation. After a notification
 claim, missing delivery evidence is uncertain: no automatic re-send, even if an
 execution crashes. This favors preventing duplicate email; manual recovery remains
 necessary for uncertain sends. No exactly-once SMTP guarantee is made.
